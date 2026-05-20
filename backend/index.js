@@ -211,44 +211,62 @@ const discoverServicesRaw = async () => {
     const newMap = {};
 
     const [dockerStatsOut, dockerPsOut, ssOutput] = await Promise.all([
-        runCommand("docker stats --no-stream --format '{{.Name}}|{{.CPUPerc}}|{{.MemPerc}}'"),
-        runCommand("docker ps --format '{{.Names}}|{{.Ports}}|{{.Status}}|{{.Label \"com.docker.compose.project\"}}'"),
+        runCommand("docker stats --no-stream --format '{{.Name}}|{{.CPUPerc}}|{{.MemPerc}}' 2>/dev/null || true"),
+        runCommand("docker ps -a --format '{{.Names}}|{{.Ports}}|{{.Status}}|{{.Label \"com.docker.compose.project\"}}'"),
         runCommand("ss -tlnp"),
     ]);
 
     const statsMap = {};
-    dockerStatsOut.split('\n').filter(Boolean).forEach(line => {
-        const [name, cpu, mem] = line.split('|');
-        statsMap[name] = { cpu, mem };
-    });
+    if (dockerStatsOut) {
+        dockerStatsOut.split('\n').filter(Boolean).forEach(line => {
+            const [name, cpu, mem] = line.split('|');
+            statsMap[name] = { cpu, mem };
+        });
+    }
 
     dockerPsOut.split('\n').filter(Boolean).forEach(line => {
         const [rawName, portsInfo, statusInfo, composeProject] = line.split('|');
         const name = rawName.split('.')[0];
-        const portMatches = (portsInfo || '').match(/:(\d+)->/g);
+        const isRunning = (statusInfo || '').toLowerCase().startsWith('up');
+        
         let health = null;
         if (statusInfo) {
             const m = statusInfo.match(/\((healthy|unhealthy|starting)\)/i);
             if (m) health = m[1].toLowerCase();
         }
-        if (portMatches) {
+
+        const stats = statsMap[rawName] || { cpu: '0%', mem: '0%' };
+        const coreCount = os.cpus().length || 1;
+
+        const containerData = {
+            name,
+            containerName: rawName,
+            type: 'docker',
+            isRunning,
+            pid: null,
+            usage: {
+                cpu: isRunning ? (parseFloat(stats.cpu) || 0) / coreCount : 0,
+                mem: isRunning ? (parseFloat(stats.mem) || 0) : 0
+            },
+            composeProject: composeProject && composeProject.trim() ? composeProject.trim() : null,
+            health,
+            port: null
+        };
+
+        const portMatches = (portsInfo || '').match(/:(\d+)->/g);
+        if (portMatches && portMatches.length > 0) {
             portMatches.forEach(match => {
                 const port = parseInt(match.replace(/[:->]/g, ''));
                 if (!seenPorts.has(port)) {
-                    const stats = statsMap[rawName] || { cpu: '0%', mem: '0%' };
-                    const coreCount = os.cpus().length || 1;
                     services.push({
-                        name,
-                        port,
-                        type: 'docker',
-                        pid: null,
-                        usage: { cpu: (parseFloat(stats.cpu) || 0) / coreCount, mem: parseFloat(stats.mem) || 0 },
-                        composeProject: composeProject && composeProject.trim() ? composeProject.trim() : null,
-                        health,
+                        ...containerData,
+                        port
                     });
                     seenPorts.add(port);
                 }
             });
+        } else {
+            services.push(containerData);
         }
     });
 
@@ -336,6 +354,7 @@ app.get('/api/services', async (req, res) => {
             if (!acc[s.name]) {
                 acc[s.name] = {
                     name: s.name,
+                    containerName: s.containerName || s.name,
                     type: s.type,
                     ports: [],
                     isWebUi: false,
@@ -345,10 +364,16 @@ app.get('/api/services', async (req, res) => {
                     usage: { cpu: 0, mem: 0 },
                     composeProject: null,
                     health: null,
+                    isRunning: s.isRunning !== undefined ? s.isRunning : true,
                     _seenUsages: new Set(),
                 };
             }
-            acc[s.name].ports.push(s.port);
+            if (s.port) {
+                acc[s.name].ports.push(s.port);
+            }
+            if (s.isRunning === false) {
+                acc[s.name].isRunning = false;
+            }
             
             const usageKey = s.type === 'docker' ? `docker-${s.name}` : `pid-${s.pid}`;
             if (!acc[s.name]._seenUsages.has(usageKey)) {
@@ -359,7 +384,7 @@ app.get('/api/services', async (req, res) => {
 
             if (s.composeProject && !acc[s.name].composeProject) acc[s.name].composeProject = s.composeProject;
             if (s.health && !acc[s.name].health) acc[s.name].health = s.health;
-            if (s.isWebUi) {
+            if (s.isWebUi && s.port) {
                 acc[s.name].isWebUi = true;
                 acc[s.name].urls.push(`${s.protocol}://${host}:${s.port}`);
                 if (s.title) acc[s.name].titles.push(s.title);
@@ -370,7 +395,7 @@ app.get('/api/services', async (req, res) => {
         }, {});
         const results = Object.values(grouped).map(s => ({
             ...s,
-            port: s.ports.length > 1 ? s.ports.sort((a, b) => a - b).join(', ') : s.ports[0],
+            port: s.ports.length > 0 ? (s.ports.length > 1 ? s.ports.sort((a, b) => a - b).join(', ') : s.ports[0]) : '—',
             url: s.isWebUi ? s.urls[0] : null,
             favicon: s.isWebUi && s.favicons.length > 0 ? s.favicons[0] : null,
             displayName: s.isWebUi && s.titles.length > 0 ? s.titles[0] : s.name,
@@ -401,6 +426,7 @@ app.get('/api/services', async (req, res) => {
                 usage: { cpu: 0, mem: 0 },
                 composeProject: null,
                 health: null,
+                isRunning: true,
                 manualId: m.id,
                 firstSeen: h.firstSeen,
                 lastSeen: h.lastSeen,
@@ -446,6 +472,33 @@ app.delete('/api/services/manual/:id', (req, res) => {
     res.json({ ok: true });
 });
 
+app.post('/api/docker/control', async (req, res) => {
+    const { name, action } = req.body;
+    if (!name || !['start', 'stop', 'restart'].includes(action)) {
+        return res.status(400).json({ error: 'Invalid name or action' });
+    }
+    try {
+        await runCommand(`docker ${action} ${JSON.stringify(name)}`);
+        discoveryCache = null; // Clear cache to show new status instantly
+        res.json({ ok: true });
+    } catch (e) {
+        res.status(500).json({ error: e.message });
+    }
+});
+
+app.get('/api/docker/logs', async (req, res) => {
+    const { name } = req.query;
+    if (!name) {
+        return res.status(400).json({ error: 'Missing container name' });
+    }
+    try {
+        const logs = await runCommand(`docker logs --tail 200 ${JSON.stringify(name)} 2>&1`);
+        res.json({ logs });
+    } catch (e) {
+        res.status(500).json({ error: e.message });
+    }
+});
+
 app.get('/api/stats', async (req, res) => {
     try {
         const cpuOutput = await runCommand("top -bn1 | grep 'Cpu(s)' | awk '{print $2 + $4}'");
@@ -458,18 +511,77 @@ app.get('/api/stats', async (req, res) => {
             return name.length > 15 ? name.substring(0, 12) + '...' : name;
         };
 
-        const topCpuOutput = await runCommand("ps -eo comm,pcpu --sort=-pcpu | head -n 11 | tail -n 10");
-        const topCpu = topCpuOutput.trim().split('\n').filter(Boolean).map(line => {
-            const parts = line.trim().split(/\s+/);
-            const coreCount = os.cpus().length || 1;
-            return { name: formatName(parts[0]), val: (parseFloat(parts[1]) || 0) / coreCount };
-        });
+        const coreCount = os.cpus().length || 1;
+        const processMap = {};
 
-        const topMemOutput = await runCommand("ps -eo comm,pmem --sort=-pmem | head -n 11 | tail -n 10");
-        const topMem = topMemOutput.trim().split('\n').filter(Boolean).map(line => {
-            const parts = line.trim().split(/\s+/);
-            return { name: formatName(parts[0]), val: parseFloat(parts[1]) || 0 };
-        });
+        const parsePsOutput = (output) => {
+            output.trim().split('\n').filter(Boolean).forEach(line => {
+                const parts = line.trim().split(/\s+/);
+                if (parts.length >= 4) {
+                    const comm = parts[0];
+                    const pid = parts[1];
+                    const cpuVal = (parseFloat(parts[2]) || 0) / coreCount;
+                    const memVal = parseFloat(parts[3]) || 0;
+
+                    if (pid === 'PID' || comm === 'COMMAND') return;
+
+                    const cleanPid = parseInt(pid, 10);
+                    if (!cleanPid) return;
+
+                    if (!processMap[cleanPid]) {
+                        processMap[cleanPid] = {
+                            name: formatName(comm),
+                            pid: cleanPid,
+                            cpu: cpuVal,
+                            mem: memVal,
+                            gpu: 0
+                        };
+                    } else {
+                        processMap[cleanPid].cpu = Math.max(processMap[cleanPid].cpu, cpuVal);
+                        processMap[cleanPid].mem = Math.max(processMap[cleanPid].mem, memVal);
+                    }
+                }
+            });
+        };
+
+        const [cpuRawOut, memRawOut] = await Promise.all([
+            runCommand("ps -eo comm,pid,pcpu,pmem --sort=-pcpu | head -n 25 | tail -n 24"),
+            runCommand("ps -eo comm,pid,pcpu,pmem --sort=-pmem | head -n 25 | tail -n 24")
+        ]);
+
+        parsePsOutput(cpuRawOut);
+        parsePsOutput(memRawOut);
+
+        try {
+            const nvidiaOutput = await runCommand("nvidia-smi --query-compute-apps=pid,used_memory --format=csv,noheader,nounits 2>/dev/null");
+            if (nvidiaOutput) {
+                nvidiaOutput.trim().split('\n').filter(Boolean).forEach(line => {
+                    const [pidStr, memStr] = line.split(',').map(s => s.trim());
+                    const pidVal = parseInt(pidStr, 10);
+                    const memVal = parseFloat(memStr) || 0;
+                    if (pidVal) {
+                        if (processMap[pidVal]) {
+                            processMap[pidVal].gpu = memVal;
+                        } else {
+                            processMap[pidVal] = {
+                                name: `GPU App (${pidVal})`,
+                                pid: pidVal,
+                                cpu: 0,
+                                mem: 0,
+                                gpu: memVal
+                            };
+                        }
+                    }
+                });
+            }
+        } catch (e) {}
+
+        const sortedProcesses = Object.values(processMap)
+            .sort((a, b) => (b.cpu + b.mem + (b.gpu ? (b.gpu / 100) : 0)) - (a.cpu + a.mem + (a.gpu ? (a.gpu / 100) : 0)))
+            .slice(0, 20);
+
+        const topCpu = sortedProcesses.map(p => ({ name: p.name, val: p.cpu }));
+        const topMem = sortedProcesses.map(p => ({ name: p.name, val: p.mem }));
 
         const { temps, gpuUtil } = await getTemperatures();
         const [usedMem, totalMem] = memDetailed.trim().split('|');
@@ -481,6 +593,7 @@ app.get('/api/stats', async (req, res) => {
             gpu: gpuUtil,
             topCpu,
             topMem,
+            processes: sortedProcesses,
             temps,
         });
     } catch (error) {
@@ -502,6 +615,7 @@ const KNOWN_AGENTS = [
     { id: 'claude', label: 'Claude Code', cmd: 'claude', vendor: 'Anthropic' },
     { id: 'claude-code', label: 'Claude Code (alias)', cmd: 'claude-code', vendor: 'Anthropic' },
     { id: 'gemini', label: 'Gemini CLI', cmd: 'gemini', vendor: 'Google' },
+    { id: 'antigravity', label: 'Antigravity', cmd: 'agy', vendor: 'Google DeepMind' },
     { id: 'codex', label: 'OpenAI Codex CLI', cmd: 'codex', vendor: 'OpenAI' },
     { id: 'opencode', label: 'OpenCode', cmd: 'opencode', vendor: 'SST' },
     { id: 'kilocode', label: 'Kilo Code', cmd: 'kilocode', vendor: 'Kilo' },
@@ -617,6 +731,144 @@ app.get('/api/agents', async (req, res) => {
     }
 });
 
+const samba = require('./samba');
+
+app.get('/api/samba/status', async (req, res) => {
+    try {
+        const status = await samba.getStatus();
+        res.json(status);
+    } catch (e) {
+        res.status(500).json({ error: e.message });
+    }
+});
+
+app.post('/api/samba/status', async (req, res) => {
+    const { action } = req.body;
+    try {
+        await samba.controlService(action);
+        res.json({ ok: true });
+    } catch (e) {
+        res.status(500).json({ error: e.message });
+    }
+});
+
+app.get('/api/samba/shares', async (req, res) => {
+    try {
+        const shares = await samba.getShares();
+        res.json(shares);
+    } catch (e) {
+        res.status(500).json({ error: e.message });
+    }
+});
+
+app.post('/api/samba/shares', async (req, res) => {
+    const { name, originalName, path, comment, writable, browsable, guestOk, validUsers, forceUser } = req.body;
+    try {
+        const result = await samba.saveShare(name, {
+            originalName, path, comment, writable, browsable, guestOk, validUsers, forceUser
+        });
+        res.json(result);
+    } catch (e) {
+        res.status(500).json({ error: e.message });
+    }
+});
+
+app.delete('/api/samba/shares/:name', async (req, res) => {
+    const { name } = req.params;
+    try {
+        const result = await samba.deleteShare(name);
+        res.json(result);
+    } catch (e) {
+        res.status(500).json({ error: e.message });
+    }
+});
+
+app.get('/api/samba/global', async (req, res) => {
+    try {
+        const settings = await samba.getGlobalSettings();
+        res.json(settings);
+    } catch (e) {
+        res.status(500).json({ error: e.message });
+    }
+});
+
+app.post('/api/samba/global', async (req, res) => {
+    const { workgroup, serverString, mapToGuest } = req.body;
+    try {
+        const result = await samba.saveGlobalSettings({ workgroup, serverString, mapToGuest });
+        res.json(result);
+    } catch (e) {
+        res.status(500).json({ error: e.message });
+    }
+});
+
+app.get('/api/samba/users', async (req, res) => {
+    try {
+        const users = await samba.getUsers();
+        res.json(users);
+    } catch (e) {
+        res.status(500).json({ error: e.message });
+    }
+});
+
+app.post('/api/samba/users', async (req, res) => {
+    const { username, password, createSystemUser } = req.body;
+    try {
+        const result = await samba.saveUser(username, password, createSystemUser);
+        res.json(result);
+    } catch (e) {
+        res.status(500).json({ error: e.message });
+    }
+});
+
+app.delete('/api/samba/users/:username', async (req, res) => {
+    const { username } = req.params;
+    try {
+        const result = await samba.deleteUser(username);
+        res.json(result);
+    } catch (e) {
+        res.status(500).json({ error: e.message });
+    }
+});
+
+app.get('/api/samba/connections', async (req, res) => {
+    try {
+        const connections = await samba.getConnections();
+        res.json(connections);
+    } catch (e) {
+        res.status(500).json({ error: e.message });
+    }
+});
+
+app.post('/api/samba/permissions', async (req, res) => {
+    const { path: dirPath, owner, mode } = req.body;
+    try {
+        const result = await samba.fixPermissions(dirPath, owner, mode);
+        res.json(result);
+    } catch (e) {
+        res.status(500).json({ error: e.message });
+    }
+});
+
+app.get('/api/samba/logs', async (req, res) => {
+    try {
+        const logs = await samba.getLogs();
+        res.json({ logs });
+    } catch (e) {
+        res.status(500).json({ error: e.message });
+    }
+});
+
+app.get('/api/samba/browse', async (req, res) => {
+    const { path: dirPath, showHidden } = req.query;
+    try {
+        const result = await samba.browse(dirPath, showHidden === 'true');
+        res.json(result);
+    } catch (e) {
+        res.status(500).json({ error: e.message });
+    }
+});
+
 const frontendPath = path.join(__dirname, '../frontend/dist');
 if (fs.existsSync(frontendPath)) {
     app.use(express.static(frontendPath));
@@ -684,6 +936,11 @@ wss.on('connection', (ws, req, query) => {
         if (TERMINAL_USER === 'root') {
             command = 'bash';
             args = ['-l'];
+        }
+
+        if (query && query.docker) {
+            command = 'docker';
+            args = ['exec', '-it', query.docker, 'sh'];
         }
 
         term = pty.spawn(command, args, {
