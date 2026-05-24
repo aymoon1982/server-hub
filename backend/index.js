@@ -925,6 +925,112 @@ const sanitizeAgent = (raw) => {
 };
 
 wss.on('connection', (ws, req, query) => {
+    if (query && query.ssh === 'true') {
+        let conn;
+        let stream;
+        
+        ws.once('message', (msg) => {
+            try {
+                const text = msg.toString();
+                const evt = JSON.parse(text);
+                if (evt.type !== 'init-ssh') {
+                    throw new Error('Expected init-ssh message');
+                }
+                
+                const { host, port, username, password, privateKey, passphrase, cols, rows } = evt;
+                if (!host || !username) {
+                    throw new Error('Host and Username are required');
+                }
+                
+                ws.send('\x1b[2m· establishing SSH connection …\x1b[0m\r\n');
+                
+                const { Client } = require('ssh2');
+                conn = new Client();
+                
+                conn.on('ready', () => {
+                    ws.send('\x1b[2m· SSH connection established. Requesting shell …\x1b[0m\r\n');
+                    conn.shell({ term: 'xterm-256color', cols: cols || 80, rows: rows || 24 }, (err, sshStream) => {
+                        if (err) {
+                            ws.send(`\r\n\x1b[31m[SSH Shell Request Failed: ${err.message}]\x1b[0m\r\n`);
+                            ws.close();
+                            conn.end();
+                            return;
+                        }
+                        stream = sshStream;
+                        
+                        stream.on('data', (data) => {
+                            if (ws.readyState === ws.OPEN) ws.send(data);
+                        });
+                        stream.on('close', () => {
+                            if (ws.readyState === ws.OPEN) {
+                                ws.send(`\r\n\x1b[33m[SSH connection closed by remote host]\x1b[0m\r\n`);
+                                ws.close();
+                            }
+                            conn.end();
+                        });
+                        
+                        ws.on('message', (msg) => {
+                            try {
+                                const text = msg.toString();
+                                if (text.startsWith('{')) {
+                                    const evt = JSON.parse(text);
+                                    if (evt.type === 'resize' && evt.cols && evt.rows) {
+                                        stream.setWindow(evt.rows, evt.cols, 0, 0);
+                                        return;
+                                    }
+                                    if (evt.type === 'data' && typeof evt.data === 'string') {
+                                        stream.write(evt.data);
+                                        return;
+                                    }
+                                }
+                                stream.write(text);
+                            } catch (e) {
+                                console.error('SSH stream write error', e);
+                            }
+                        });
+                    });
+                });
+                
+                conn.on('error', (err) => {
+                    try { ws.send(`\r\n\x1b[31m[SSH Connection Error: ${err.message}]\x1b[0m\r\n`); } catch {}
+                    try { ws.close(); } catch {}
+                });
+                
+                conn.on('close', () => {
+                    try { ws.close(); } catch {}
+                });
+                
+                const connectConfig = {
+                    host,
+                    port: port || 22,
+                    username,
+                    readyTimeout: 15000,
+                };
+                
+                if (privateKey && privateKey.trim()) {
+                    connectConfig.privateKey = privateKey;
+                    if (passphrase) connectConfig.passphrase = passphrase;
+                } else if (password) {
+                    connectConfig.password = password;
+                }
+                
+                conn.connect(connectConfig);
+                
+            } catch (e) {
+                try { ws.send(`\r\n\x1b[31m[SSH Initialization Failed: ${e.message}]\x1b[0m\r\n`); } catch {}
+                try { ws.close(); } catch {}
+                if (conn) try { conn.end(); } catch {}
+            }
+        });
+        
+        ws.on('close', () => {
+            if (stream) try { stream.end(); } catch {}
+            if (conn) try { conn.end(); } catch {}
+        });
+        
+        return;
+    }
+
     let term;
     try {
         const agent = sanitizeAgent(query && query.agent);

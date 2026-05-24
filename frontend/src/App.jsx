@@ -130,12 +130,137 @@ const AddManualModal = ({ onSubmit, onClose, submitting }) => {
     </motion.div>
   );
 };
+
+const SshServerModal = ({ server, onSubmit, onClose }) => {
+  const [label, setLabel] = useState(server?.label || '');
+  const [host, setHost] = useState(server?.host || '');
+  const [port, setPort] = useState(server?.port || 22);
+  const [username, setUsername] = useState(server?.username || '');
+  const [authType, setAuthType] = useState(server?.authType || 'password');
+  const [password, setPassword] = useState(server?.password || '');
+  const [privateKey, setPrivateKey] = useState(server?.privateKey || '');
+  const [passphrase, setPassphrase] = useState(server?.passphrase || '');
+  const [error, setError] = useState(null);
+
+  const submit = (e) => {
+    e.preventDefault();
+    setError(null);
+    if (!label.trim() || !host.trim() || !username.trim()) {
+      setError('Label, Host, and Username are required');
+      return;
+    }
+    if (authType === 'password' && !password.trim()) {
+      setError('Password is required for password authentication');
+      return;
+    }
+    if (authType === 'key' && !privateKey.trim()) {
+      setError('Private key content is required for key authentication');
+      return;
+    }
+    onSubmit({
+      id: server?.id || `ssh-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+      label: label.trim(),
+      host: host.trim(),
+      port: parseInt(port, 10) || 22,
+      username: username.trim(),
+      authType,
+      password: authType === 'password' ? password : '',
+      privateKey: authType === 'key' ? privateKey : '',
+      passphrase: authType === 'key' ? passphrase : '',
+    });
+  };
+
+  useEffect(() => {
+    const onKey = (e) => { if (e.key === 'Escape') onClose(); };
+    document.addEventListener('keydown', onKey);
+    return () => document.removeEventListener('keydown', onKey);
+  }, [onClose]);
+
+  return (
+    <motion.div
+      initial={{ opacity: 0 }}
+      animate={{ opacity: 1 }}
+      exit={{ opacity: 0 }}
+      className="preview-overlay"
+      onClick={onClose}
+    >
+      <motion.form
+        initial={{ opacity: 0, scale: 0.95 }}
+        animate={{ opacity: 1, scale: 1 }}
+        exit={{ opacity: 0, scale: 0.95 }}
+        className="manual-form"
+        style={{ maxWidth: '500px' }}
+        onClick={(e) => e.stopPropagation()}
+        onSubmit={submit}
+      >
+        <div className="manual-form-header">
+          <span>{server ? 'Edit SSH Server' : 'Add SSH Server'}</span>
+          <button type="button" className="preview-close" onClick={onClose} aria-label="Close">
+            <X size={16} />
+          </button>
+        </div>
+        <label className="manual-field">
+          <span>Label / Friendly Name</span>
+          <input value={label} onChange={(e) => setLabel(e.target.value)} placeholder="e.g. Production VPS" autoFocus />
+        </label>
+        <div style={{ display: 'grid', gridTemplateColumns: '3fr 1fr', gap: '1rem' }}>
+          <label className="manual-field">
+            <span>Host / IP Address</span>
+            <input value={host} onChange={(e) => setHost(e.target.value)} placeholder="e.g. 192.168.1.100 or myvps.com" />
+          </label>
+          <label className="manual-field">
+            <span>Port</span>
+            <input type="number" value={port} onChange={(e) => setPort(e.target.value)} placeholder="22" />
+          </label>
+        </div>
+        <label className="manual-field">
+          <span>Username</span>
+          <input value={username} onChange={(e) => setUsername(e.target.value)} placeholder="e.g. root or ubuntu" />
+        </label>
+        <label className="manual-field">
+          <span>Authentication Type</span>
+          <select value={authType} onChange={(e) => setAuthType(e.target.value)} className="select-input" style={{ width: '100%', padding: '0.6rem', borderRadius: '6px', background: 'rgba(255,255,255,0.05)', border: '1px solid var(--border)', color: 'var(--text-main)' }}>
+            <option value="password">Password</option>
+            <option value="key">SSH Private Key</option>
+          </select>
+        </label>
+
+        {authType === 'password' ? (
+          <label className="manual-field">
+            <span>Password</span>
+            <input type="password" value={password} onChange={(e) => setPassword(e.target.value)} placeholder="Enter SSH password" />
+          </label>
+        ) : (
+          <>
+            <label className="manual-field">
+              <span>Private Key Content (PEM Format)</span>
+              <textarea value={privateKey} onChange={(e) => setPrivateKey(e.target.value)} placeholder="-----BEGIN OPENSSH PRIVATE KEY-----&#10;..." rows={6} style={{ width: '100%', padding: '0.6rem', borderRadius: '6px', background: 'rgba(255,255,255,0.05)', border: '1px solid var(--border)', color: 'var(--text-main)', fontFamily: 'monospace', resize: 'vertical' }} />
+            </label>
+            <label className="manual-field">
+              <span>Key Passphrase (optional)</span>
+              <input type="password" value={passphrase} onChange={(e) => setPassphrase(e.target.value)} placeholder="Enter key passphrase if encrypted" />
+            </label>
+          </>
+        )}
+
+        {error && <div className="manual-error">{error}</div>}
+        <div className="manual-actions">
+          <button type="button" className="action-secondary" onClick={onClose}>Cancel</button>
+          <button type="submit" className="action-button web">
+            {server ? 'Save Changes' : 'Add Server'}
+          </button>
+        </div>
+      </motion.form>
+    </motion.div>
+  );
+};
+
 import { Terminal as XTermTerminal } from '@xterm/xterm';
 import { FitAddon } from '@xterm/addon-fit';
 import { WebLinksAddon } from '@xterm/addon-web-links';
 import '@xterm/xterm/css/xterm.css';
 
-const VALID_TABS = new Set(['web', 'backend', 'agents', 'cpu', 'ram', 'samba']);
+const VALID_TABS = new Set(['web', 'backend', 'agents', 'cpu', 'ram', 'samba', 'files', 'resources', 'ssh']);
 const getInitialTab = () => {
   if (typeof window === 'undefined') return 'web';
   const t = new URLSearchParams(window.location.search).get('tab');
@@ -272,6 +397,7 @@ const TerminalPane = ({ session, active, onStatusChange }) => {
     const params = new URLSearchParams();
     if (session.agent) params.set('agent', session.agent.id);
     if (session.docker) params.set('docker', session.docker);
+    if (session.type === 'ssh') params.set('ssh', 'true');
     params.set('cols', String(term.cols));
     params.set('rows', String(term.rows));
     const ws = new WebSocket(`${proto}://${window.location.host}/ws/terminal?${params.toString()}`);
@@ -281,7 +407,23 @@ const TerminalPane = ({ session, active, onStatusChange }) => {
     ws.onopen = () => {
       opened = true;
       onStatusChange?.('connected');
-      try { ws.send(JSON.stringify({ type: 'resize', cols: term.cols, rows: term.rows })); } catch {}
+      if (session.type === 'ssh') {
+        try {
+          ws.send(JSON.stringify({
+            type: 'init-ssh',
+            host: session.sshConfig.host,
+            port: session.sshConfig.port,
+            username: session.sshConfig.username,
+            password: session.sshConfig.password,
+            privateKey: session.sshConfig.privateKey,
+            passphrase: session.sshConfig.passphrase,
+            cols: term.cols,
+            rows: term.rows
+          }));
+        } catch {}
+      } else {
+        try { ws.send(JSON.stringify({ type: 'resize', cols: term.cols, rows: term.rows })); } catch {}
+      }
     };
     ws.onmessage = (e) => {
       if (typeof e.data === 'string') {
@@ -385,7 +527,7 @@ const TerminalOverlay = ({
                 >
                   <span className={`terminal-tab-dot terminal-status-${status}`} />
                   <TerminalSquare size={12} />
-                  <span className="terminal-tab-label">{t.docker ? `🐳 ${t.docker}` : t.agent ? t.agent.label : `Shell ${t.shellIndex}`}</span>
+                  <span className="terminal-tab-label">{t.type === 'ssh' ? `🔌 ${t.label}` : t.docker ? `🐳 ${t.docker}` : t.agent ? t.agent.label : `Shell ${t.shellIndex}`}</span>
                   <button
                     type="button"
                     className="terminal-tab-close"
@@ -451,7 +593,7 @@ const TerminalOverlay = ({
         >
           <TerminalSquare size={14} />
           <span className="terminal-chip-title">
-            {activeTerminal?.agent?.label || `Shell ${activeTerminal?.shellIndex || ''}`}
+            {activeTerminal?.type === 'ssh' ? activeTerminal.label : activeTerminal?.agent?.label || `Shell ${activeTerminal?.shellIndex || ''}`}
           </span>
           {terminals.length > 1 && (
             <span className="terminal-chip-count">+{terminals.length - 1}</span>
@@ -1938,6 +2080,20 @@ function App() {
   const [terminalStatuses, setTerminalStatuses] = useState({});
   const [terminalMinimized, setTerminalMinimized] = useState(false);
   const shellCounterRef = React.useRef(0);
+  const [sshServers, setSshServers] = useState(() => {
+    try {
+      const saved = localStorage.getItem('ssh_servers');
+      return saved ? JSON.parse(saved) : [];
+    } catch {
+      return [];
+    }
+  });
+  const [showSshModal, setShowSshModal] = useState(false);
+  const [editSshServer, setEditSshServer] = useState(null);
+
+  useEffect(() => {
+    localStorage.setItem('ssh_servers', JSON.stringify(sshServers));
+  }, [sshServers]);
   const [showAddManual, setShowAddManual] = useState(false);
   const [submittingManual, setSubmittingManual] = useState(false);
   const [theme, setTheme] = useState(() => {
@@ -2117,6 +2273,25 @@ function App() {
       shellIndex = shellCounterRef.current;
     }
     setTerminals(prev => [...prev, { id, agent: agent || null, shellIndex }]);
+    setActiveTerminalId(id);
+    setTerminalMinimized(false);
+  }, []);
+
+  const openSshTerminal = useCallback((server) => {
+    const id = `term-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
+    setTerminals(prev => [...prev, {
+      id,
+      type: 'ssh',
+      label: server.label || `SSH: ${server.username}@${server.host}`,
+      sshConfig: {
+        host: server.host,
+        port: server.port,
+        username: server.username,
+        password: server.password,
+        privateKey: server.privateKey,
+        passphrase: server.passphrase
+      }
+    }]);
     setActiveTerminalId(id);
     setTerminalMinimized(false);
   }, []);
@@ -2371,6 +2546,13 @@ function App() {
               <Folder size={18} />
               <span>Files</span>
             </button>
+            <button
+              className={`nav-tab ${activeTab === 'ssh' ? 'active' : ''}`}
+              onClick={() => setActiveTab('ssh')}
+            >
+              <TerminalSquare size={18} />
+              <span>SSH</span>
+            </button>
           </div>
           
           <div className="refresh-status">
@@ -2494,6 +2676,99 @@ function App() {
                 />
               </motion.div>
             )}
+            {activeTab === 'ssh' && (
+              <motion.div
+                key="ssh-view"
+                initial={{ opacity: 0 }}
+                animate={{ opacity: 1 }}
+                exit={{ opacity: 0 }}
+                style={{ width: '100%' }}
+              >
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '1.5rem', flexWrap: 'wrap', gap: '1rem' }}>
+                  <div>
+                    <h3 style={{ margin: 0, fontSize: '1.25rem', fontWeight: 600 }}>SSH Server Connections</h3>
+                    <p style={{ margin: '0.25rem 0 0 0', fontSize: '0.85rem', color: 'var(--text-muted)' }}>Manage and open terminals to your remote servers.</p>
+                  </div>
+                  <button
+                    type="button"
+                    className="action-button web"
+                    style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}
+                    onClick={() => {
+                      setEditSshServer(null);
+                      setShowSshModal(true);
+                    }}
+                  >
+                    <Plus size={16} />
+                    <span>Add Server</span>
+                  </button>
+                </div>
+
+                {sshServers.length > 0 ? (
+                  <div className="grid-layout">
+                    {sshServers.map((server) => (
+                      <div key={server.id} className="service-card animate-fade-in" style={{ display: 'flex', flexDirection: 'column', height: '100%' }}>
+                        <div className="service-header" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: '1rem' }}>
+                          <div style={{ minWidth: 0, flex: 1, paddingRight: '0.5rem' }}>
+                            <h4 style={{ margin: 0, fontSize: '1.05rem', fontWeight: 600, color: 'var(--text-main)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{server.label}</h4>
+                            <code style={{ fontSize: '0.75rem', color: 'var(--text-muted)', background: 'rgba(255,255,255,0.03)', padding: '0.1rem 0.3rem', borderRadius: '4px', marginTop: '0.25rem', display: 'inline-block', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', maxWidth: '100%' }}>
+                              {server.username}@{server.host}:{server.port || 22}
+                            </code>
+                          </div>
+                          <span className={`badge-pill ${server.authType === 'key' ? 'info' : 'success'}`} style={{ fontSize: '0.7rem', flexShrink: 0 }}>
+                            {server.authType === 'key' ? '🔑 Key' : '🔒 Pass'}
+                          </span>
+                        </div>
+                        <div className="service-actions" style={{ marginTop: 'auto', display: 'flex', gap: '0.5rem', width: '100%' }}>
+                          <button
+                            type="button"
+                            className="action-button web"
+                            style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '0.5rem' }}
+                            onClick={() => openSshTerminal(server)}
+                          >
+                            <TerminalSquare size={14} />
+                            <span>Connect</span>
+                          </button>
+                          <button
+                            type="button"
+                            className="action-secondary"
+                            style={{ padding: '0.5rem' }}
+                            title="Edit server settings"
+                            onClick={() => {
+                              setEditSshServer(server);
+                              setShowSshModal(true);
+                            }}
+                          >
+                            <Pencil size={14} />
+                          </button>
+                          <button
+                            type="button"
+                            className="action-secondary danger-btn"
+                            style={{ padding: '0.5rem' }}
+                            title="Delete server"
+                            onClick={() => {
+                              showConfirm(
+                                'Delete SSH Server',
+                                `Are you sure you want to delete the configuration for ${server.label}?`,
+                                () => {
+                                  setSshServers(prev => prev.filter(s => s.id !== server.id));
+                                },
+                                true
+                              );
+                            }}
+                          >
+                            <Trash2 size={14} />
+                          </button>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                ) : (
+                  <div className="empty-state" style={{ padding: '3rem 1.5rem', textAlign: 'center', background: 'rgba(255,255,255,0.02)', borderRadius: '12px', border: '1px dashed var(--border)' }}>
+                    <p style={{ margin: 0, color: 'var(--text-muted)', fontSize: '0.95rem' }}>No SSH servers defined yet. Click "Add Server" to get started.</p>
+                  </div>
+                )}
+              </motion.div>
+            )}
             {activeTab === 'agents' && (
               <motion.div
                 key="agents-view"
@@ -2605,6 +2880,31 @@ function App() {
             submitting={submittingManual}
             onSubmit={submitManualService}
             onClose={() => setShowAddManual(false)}
+          />
+        )}
+      </AnimatePresence>
+
+      <AnimatePresence>
+        {showSshModal && (
+          <SshServerModal
+            server={editSshServer}
+            onClose={() => {
+              setShowSshModal(false);
+              setEditSshServer(null);
+            }}
+            onSubmit={(serverData) => {
+              setSshServers(prev => {
+                const idx = prev.findIndex(s => s.id === serverData.id);
+                if (idx > -1) {
+                  const next = [...prev];
+                  next[idx] = serverData;
+                  return next;
+                }
+                return [...prev, serverData];
+              });
+              setShowSshModal(false);
+              setEditSshServer(null);
+            }}
           />
         )}
       </AnimatePresence>
