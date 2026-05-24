@@ -149,8 +149,10 @@ h1 {
 
 /* Metrics Section */
 .metrics-grid {
-  display: flex;
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
   gap: 1rem;
+  width: 100%;
 }
 
 .metric-card {
@@ -1984,5 +1986,184 @@ h1 {
   font-weight: 600;
   font-size: 0.9rem;
   color: var(--text-main);
+}
+
+/* --- Responsive Utility Styles & Classes --- */
+
+/* Action buttons inside card row */
+.action-row .action-button {
+  margin-top: 0;
+  width: auto;
+  flex: 1;
+}
+
+/* Resources Monitor stats & rows styling */
+.resources-header-stats {
+  margin-left: auto;
+  font-size: 0.75rem;
+  color: var(--text-muted);
+  display: flex;
+  gap: 1.5rem;
+}
+
+.process-header-row {
+  display: grid;
+  grid-template-columns: 1fr 90px 90px 90px;
+  gap: 0 0.5rem;
+  padding: 0.4rem 0.75rem;
+  font-size: 0.68rem;
+  color: var(--text-muted);
+  border-bottom: 1px solid var(--border);
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.process-row {
+  display: grid;
+  grid-template-columns: 1fr 90px 90px 90px;
+  gap: 0 0.5rem;
+  padding: 0.5rem 0.75rem;
+  align-items: center;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.04);
+}
+
+.proc-mini-bar {
+  width: 36px;
+  height: 4px;
+  border-radius: 2px;
+  overflow: hidden;
+  background: rgba(255, 255, 255, 0.05);
+}
+
+.proc-mini-bar div {
+  height: 100%;
+  border-radius: 2px;
+  transition: width 0.4s;
+}
+
+.cpu-mini-bar { background: rgba(59, 130, 246, 0.15); }
+.cpu-mini-bar div { background: #3b82f6; }
+.ram-mini-bar { background: rgba(139, 92, 246, 0.15); }
+.ram-mini-bar div { background: #8b5cf6; }
+.gpu-mini-bar { background: rgba(16, 185, 129, 0.15); }
+.gpu-mini-bar div { background: #10b981; }
+
+/* Responsive tables */
+.table-responsive {
+  width: 100%;
+  overflow-x: auto;
+  -webkit-overflow-scrolling: touch;
+}
+
+/* Files manager container */
+.files-view-container {
+  height: calc(100vh - 280px);
+  min-height: 600px;
+  border-radius: 12px;
+  overflow: hidden;
+  border: 1px solid var(--border);
+  background: rgba(255, 255, 255, 0.03);
+  backdrop-filter: blur(10px);
+  box-shadow: 0 8px 32px 0 rgba(0, 0, 0, 0.3);
+}
+
+/* Tablet & Smaller Layouts */
+@media (max-width: 1024px) {
+  .nav-container {
+    flex-direction: column;
+    align-items: stretch;
+    gap: 1rem;
+    padding: 1rem;
+  }
+  .tabs-wrapper {
+    overflow-x: auto;
+    padding-bottom: 0.25rem;
+    scrollbar-width: none;
+    -ms-overflow-style: none;
+  }
+  .tabs-wrapper::-webkit-scrollbar {
+    display: none;
+  }
+  .refresh-status {
+    flex-wrap: wrap;
+    padding-right: 0;
+    gap: 0.75rem;
+    justify-content: space-between;
+    width: 100%;
+  }
+  .search-bar {
+    flex: 1;
+    min-width: 200px;
+  }
+  .files-view-container {
+    height: calc(100vh - 350px);
+    min-height: 450px;
+  }
+}
+
+/* Mobile & Small Screen Media Queries */
+@media (max-width: 768px) {
+  .samba-meta-grid {
+    grid-template-columns: repeat(2, 1fr);
+  }
+  .samba-tabs {
+    width: 100%;
+    overflow-x: auto;
+    white-space: nowrap;
+    scrollbar-width: none;
+    -ms-overflow-style: none;
+  }
+  .samba-tabs::-webkit-scrollbar {
+    display: none;
+  }
+}
+
+@media (max-width: 600px) {
+  .app-container {
+    padding: 1rem 0.75rem;
+  }
+  .preview-overlay {
+    padding: 0.5rem;
+  }
+  .preview-frame {
+    height: 95vh;
+  }
+  .vitals-bar {
+    gap: 1rem;
+    flex-wrap: wrap;
+    justify-content: center;
+    width: 100%;
+  }
+  .process-list-header {
+    flex-wrap: wrap;
+    gap: 0.75rem;
+  }
+  .resources-header-stats {
+    margin-left: 0;
+    width: 100%;
+    justify-content: flex-start;
+    gap: 1rem;
+  }
+  .process-header-row,
+  .process-row {
+    grid-template-columns: 1fr 65px 65px 65px;
+  }
+  .proc-mini-bar {
+    display: none;
+  }
+  .terminal-chip-title {
+    max-width: 100px;
+  }
+  .files-view-container {
+    height: calc(100vh - 200px);
+    min-height: 400px;
+  }
+}
+
+@media (max-width: 480px) {
+  .samba-meta-grid {
+    grid-template-columns: 1fr;
+  }
 }
 

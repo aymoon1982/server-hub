@@ -668,33 +668,33 @@ const ResourcesMonitor = ({ processes, gpuUtil, stats }) => {
       <div className="process-list-header">
         <Activity size={18} />
         <span>Application Resource Usage</span>
-        <span style={{ marginLeft: 'auto', fontSize: '0.75rem', color: 'var(--text-muted)', display: 'flex', gap: '1.5rem' }}>
+        <span className="resources-header-stats">
           <span>CPU: <strong style={{ color: '#3b82f6' }}>{stats.cpu.toFixed(1)}%</strong></span>
           <span>RAM: <strong style={{ color: '#8b5cf6' }}>{stats.ram.toFixed(1)}%</strong></span>
           {gpuUtil > 0 && <span>GPU: <strong style={{ color: '#10b981' }}>{gpuUtil.toFixed(1)}%</strong></span>}
         </span>
       </div>
-      <div style={{ display: 'grid', gridTemplateColumns: '1fr 90px 90px 90px', gap: '0 0.5rem', padding: '0.4rem 0.75rem', fontSize: '0.68rem', color: 'var(--text-muted)', borderBottom: '1px solid var(--border)', fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.04em' }}>
+      <div className="process-header-row">
         <span>Process</span><span style={{ textAlign: 'right' }}>CPU</span><span style={{ textAlign: 'right' }}>RAM</span><span style={{ textAlign: 'right' }}>GPU VRAM</span>
       </div>
       <div className="process-items">
         {processes.map((proc, i) => (
-          <div key={`${proc.name}-${proc.pid}-${i}`} style={{ display: 'grid', gridTemplateColumns: '1fr 90px 90px 90px', gap: '0 0.5rem', padding: '0.5rem 0.75rem', alignItems: 'center', borderBottom: '1px solid rgba(255,255,255,0.04)' }}>
+          <div key={`${proc.name}-${proc.pid}-${i}`} className="process-row">
             <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', minWidth: 0 }}>
               <span className="proc-rank" style={{ flexShrink: 0 }}>#{i + 1}</span>
               <span className="proc-name" style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{proc.name}</span>
             </div>
             {/* CPU */}
             <div style={{ display: 'flex', alignItems: 'center', gap: '0.3rem', justifyContent: 'flex-end' }}>
-              <div style={{ width: 36, height: 4, borderRadius: 2, background: 'rgba(59,130,246,0.15)', overflow: 'hidden' }}>
-                <div style={{ height: '100%', width: `${Math.min(proc.cpu, 100)}%`, background: '#3b82f6', borderRadius: 2, transition: 'width 0.4s' }} />
+              <div className="proc-mini-bar cpu-mini-bar">
+                <div style={{ width: `${Math.min(proc.cpu, 100)}%` }} />
               </div>
               <span style={{ fontSize: '0.72rem', color: '#3b82f6', minWidth: 34, textAlign: 'right' }}>{proc.cpu.toFixed(1)}%</span>
             </div>
             {/* RAM */}
             <div style={{ display: 'flex', alignItems: 'center', gap: '0.3rem', justifyContent: 'flex-end' }}>
-              <div style={{ width: 36, height: 4, borderRadius: 2, background: 'rgba(139,92,246,0.15)', overflow: 'hidden' }}>
-                <div style={{ height: '100%', width: `${Math.min(proc.mem, 100)}%`, background: '#8b5cf6', borderRadius: 2, transition: 'width 0.4s' }} />
+              <div className="proc-mini-bar ram-mini-bar">
+                <div style={{ width: `${Math.min(proc.mem, 100)}%` }} />
               </div>
               <span style={{ fontSize: '0.72rem', color: '#8b5cf6', minWidth: 34, textAlign: 'right' }}>{proc.mem.toFixed(1)}%</span>
             </div>
@@ -702,8 +702,8 @@ const ResourcesMonitor = ({ processes, gpuUtil, stats }) => {
             <div style={{ display: 'flex', alignItems: 'center', gap: '0.3rem', justifyContent: 'flex-end' }}>
               {proc.gpu > 0 ? (
                 <>
-                  <div style={{ width: 36, height: 4, borderRadius: 2, background: 'rgba(16,185,129,0.15)', overflow: 'hidden' }}>
-                    <div style={{ height: '100%', width: `${Math.min((proc.gpu / maxGpu) * 100, 100)}%`, background: '#10b981', borderRadius: 2, transition: 'width 0.4s' }} />
+                  <div className="proc-mini-bar gpu-mini-bar">
+                    <div style={{ width: `${Math.min((proc.gpu / maxGpu) * 100, 100)}%` }} />
                   </div>
                   <span style={{ fontSize: '0.72rem', color: '#10b981', minWidth: 44, textAlign: 'right' }}>{proc.gpu}MB</span>
                 </>
@@ -1618,40 +1618,42 @@ const SambaPanel = ({ showAlert, showConfirm }) => {
                 <div className="split-layout">
                   <div className="samba-users-list-panel">
                     <h4>Active Samba Credentials</h4>
-                    <table className="samba-table">
-                      <thead>
-                        <tr>
-                          <th>Username</th>
-                          <th>UID</th>
-                          <th>Full Name</th>
-                          <th>Actions</th>
-                        </tr>
-                      </thead>
-                      <tbody>
-                        {users.sambaUsers.length === 0 ? (
-                          <tr><td colSpan="4" className="text-center">No Samba credentials configured.</td></tr>
-                        ) : (
-                          users.sambaUsers.map(user => (
-                            <tr key={user.username}>
-                              <td><strong>{user.username}</strong></td>
-                              <td>{user.uid}</td>
-                              <td>{user.fullName}</td>
-                              <td>
-                                <div className="table-actions">
-                                  <button type="button" className="refresh-button" onClick={() => {
-                                    setMapExistingUser(user.username);
-                                    setNewUserPassword('');
-                                    setCreateSysUser(false);
-                                    setShowUserModal(true);
-                                  }}>Change Pass</button>
-                                  <button type="button" className="refresh-button danger-btn" onClick={() => handleDeleteUser(user.username)}>Delete</button>
-                                </div>
-                              </td>
-                            </tr>
-                          ))
-                        )}
-                      </tbody>
-                    </table>
+                    <div className="table-responsive">
+                      <table className="samba-table">
+                        <thead>
+                          <tr>
+                            <th>Username</th>
+                            <th>UID</th>
+                            <th>Full Name</th>
+                            <th>Actions</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {users.sambaUsers.length === 0 ? (
+                            <tr><td colSpan="4" className="text-center">No Samba credentials configured.</td></tr>
+                          ) : (
+                            users.sambaUsers.map(user => (
+                              <tr key={user.username}>
+                                <td><strong>{user.username}</strong></td>
+                                <td>{user.uid}</td>
+                                <td>{user.fullName}</td>
+                                <td>
+                                  <div className="table-actions">
+                                    <button type="button" className="refresh-button" onClick={() => {
+                                      setMapExistingUser(user.username);
+                                      setNewUserPassword('');
+                                      setCreateSysUser(false);
+                                      setShowUserModal(true);
+                                    }}>Change Pass</button>
+                                    <button type="button" className="refresh-button danger-btn" onClick={() => handleDeleteUser(user.username)}>Delete</button>
+                                  </div>
+                                </td>
+                              </tr>
+                            ))
+                          )}
+                        </tbody>
+                      </table>
+                    </div>
                   </div>
 
                   <div className="samba-add-user-panel">
@@ -1705,32 +1707,34 @@ const SambaPanel = ({ showAlert, showConfirm }) => {
                   </button>
                 </div>
 
-                <table className="samba-table">
-                  <thead>
-                    <tr>
-                      <th>User</th>
-                      <th>Share</th>
-                      <th>Client Machine</th>
-                      <th>PID</th>
-                      <th>Connected Since</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {connections.length === 0 ? (
-                      <tr><td colSpan="5" className="text-center">No active connections. Samba is idle.</td></tr>
-                    ) : (
-                      connections.map((c, idx) => (
-                        <tr key={`${c.pid}-${c.service}-${idx}`}>
-                          <td><strong>{c.username}</strong></td>
-                          <td><span className="badge-pill info">[{c.service}]</span></td>
-                          <td><code>{c.machine}</code></td>
-                          <td>{c.pid}</td>
-                          <td>{c.connectedAt}</td>
-                        </tr>
-                      ))
-                    )}
-                  </tbody>
-                </table>
+                <div className="table-responsive">
+                  <table className="samba-table">
+                    <thead>
+                      <tr>
+                        <th>User</th>
+                        <th>Share</th>
+                        <th>Client Machine</th>
+                        <th>PID</th>
+                        <th>Connected Since</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {connections.length === 0 ? (
+                        <tr><td colSpan="5" className="text-center">No active connections. Samba is idle.</td></tr>
+                      ) : (
+                        connections.map((c, idx) => (
+                          <tr key={`${c.pid}-${c.service}-${idx}`}>
+                            <td><strong>{c.username}</strong></td>
+                            <td><span className="badge-pill info">[{c.service}]</span></td>
+                            <td><code>{c.machine}</code></td>
+                            <td>{c.pid}</td>
+                            <td>{c.connectedAt}</td>
+                          </tr>
+                        ))
+                      )}
+                    </tbody>
+                  </table>
+                </div>
               </div>
             )}
 
@@ -2481,16 +2485,7 @@ function App() {
                 initial={{ opacity: 0 }}
                 animate={{ opacity: 1 }}
                 exit={{ opacity: 0 }}
-                style={{ 
-                  height: 'calc(100vh - 280px)', 
-                  minHeight: '600px',
-                  borderRadius: '12px', 
-                  overflow: 'hidden', 
-                  border: '1px solid var(--border)',
-                  background: 'rgba(255, 255, 255, 0.03)',
-                  backdropFilter: 'blur(10px)',
-                  boxShadow: '0 8px 32px 0 rgba(0, 0, 0, 0.3)'
-                }}
+                className="files-view-container"
               >
                 <iframe
                   src={`${window.location.protocol}//${window.location.hostname}:8084`}
