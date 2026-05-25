@@ -1,16 +1,47 @@
 const fs = require('fs');
 const path = require('path');
-const { exec } = require('child_process');
+const { exec, execFile, spawn } = require('child_process');
 const os = require('os');
 
 const SMB_CONF_PATH = '/etc/samba/smb.conf';
-const TEMP_CONF_PATH = '/tmp/smb.conf.tmp';
+
+const RE_USERNAME = /^[a-z_][a-z0-9_-]{0,31}$/;
+const RE_SHARE_NAME = /^[A-Za-z0-9_.-]{1,80}$/;
+const RE_MODE = /^[0-7]{3,4}$/;
+const RE_OWNER = /^[a-z_][a-z0-9_-]*(?::[a-z_][a-z0-9_-]*)?$/;
+const RESERVED_SECTIONS = new Set(['global', 'homes', 'printers', 'print$']);
+function assertSafe(re, value, label) {
+  if (typeof value !== 'string' || !re.test(value)) {
+    throw new Error(`Invalid ${label}`);
+  }
+}
+function hasUnsafeChars(s) { return typeof s !== 'string' || /[\r\n\[\]]/.test(s); }
+
+const BROWSE_ROOT = path.resolve(process.env.SAMBA_BROWSE_ROOT || '/srv');
+
+const FORBIDDEN_TARGETS = new Set(['/', '/etc', '/root', '/home', '/boot', '/usr', '/var', '/proc', '/sys', '/dev', '/bin', '/sbin', '/lib', '/lib64']);
 
 // Helper to run shell commands
 const runCommand = (cmd) => new Promise((resolve) => {
     exec(cmd, (error, stdout, stderr) => {
         if (error) {
-            resolve({ code: error.code, stdout: stdout || '', stderr: stderr || '', error });
+            const trimmedErr = (stderr || '').trim();
+            const sanitizedError = new Error('Command failed' + (trimmedErr ? `: ${trimmedErr}` : ''));
+            sanitizedError.code = error.code;
+            resolve({ code: error.code, stdout: stdout || '', stderr: trimmedErr, error: sanitizedError });
+        } else {
+            resolve({ code: 0, stdout: stdout || '', stderr: stderr || '' });
+        }
+    });
+});
+
+const runExecFile = (file, args) => new Promise((resolve) => {
+    execFile(file, args, (error, stdout, stderr) => {
+        if (error) {
+            const trimmedErr = (stderr || '').trim();
+            const sanitizedError = new Error('Command failed' + (trimmedErr ? `: ${trimmedErr}` : ''));
+            sanitizedError.code = error.code;
+            resolve({ code: error.code, stdout: stdout || '', stderr: trimmedErr, error: sanitizedError });
         } else {
             resolve({ code: 0, stdout: stdout || '', stderr: stderr || '' });
         }
@@ -93,28 +124,34 @@ async function readConfFile() {
  * Writes the config file and reloads Samba.
  */
 async function writeConfFile(sections) {
+    let tmpDir = null;
     try {
         const content = serializeConfig(sections);
-        fs.writeFileSync(TEMP_CONF_PATH, content, 'utf8');
-        
-        // Copy using sudo since smb.conf is owned by root
-        const cpRes = await runCommand(`sudo cp ${TEMP_CONF_PATH} ${SMB_CONF_PATH}`);
+        tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'samba-'));
+        const tmpFile = path.join(tmpDir, 'smb.conf');
+        fs.writeFileSync(tmpFile, content, { flag: 'w' });
+
+        const cpRes = await runExecFile('sudo', ['install', '-m', '0644', tmpFile, SMB_CONF_PATH]);
         if (cpRes.code !== 0) {
             throw new Error(`Failed to copy config file: ${cpRes.stderr}`);
         }
-        
-        // Reload Samba service to apply changes
-        const reloadRes = await runCommand('sudo systemctl reload smbd || sudo service smbd reload');
+
+        const reloadRes = await runExecFile('sudo', ['systemctl', 'reload', 'smbd']);
         if (reloadRes.code !== 0) {
-            throw new Error(`Failed to reload Samba service: ${reloadRes.stderr}`);
+            const fallback = await runExecFile('sudo', ['service', 'smbd', 'reload']);
+            if (fallback.code !== 0) {
+                throw new Error(`Failed to reload Samba service: ${fallback.stderr}`);
+            }
         }
-        
-        // Clean up temp file
-        try { fs.unlinkSync(TEMP_CONF_PATH); } catch (err) {}
+
         return true;
     } catch (e) {
         console.error('Failed to write Samba config', e.message);
         throw e;
+    } finally {
+        if (tmpDir) {
+            try { fs.rmSync(tmpDir, { recursive: true, force: true }); } catch (err) {}
+        }
     }
 }
 
@@ -131,8 +168,8 @@ async function getStatus() {
     }
     
     // Check service active state
-    const actRes = await runCommand('systemctl is-active smbd || service smbd status');
-    status.active = actRes.stdout.includes('active') || actRes.stdout.includes('running') || actRes.code === 0;
+    const actRes = await runExecFile('systemctl', ['is-active', 'smbd']);
+    status.active = actRes.stdout.trim() === 'active';
 
     // Check service enabled state
     const enRes = await runCommand('systemctl is-enabled smbd');
@@ -172,17 +209,12 @@ async function getStatus() {
  * Toggles or restarts the Samba service.
  */
 async function controlService(action) {
-    let cmd = '';
-    if (action === 'start') cmd = 'sudo systemctl start smbd';
-    else if (action === 'stop') cmd = 'sudo systemctl stop smbd';
-    else if (action === 'restart') cmd = 'sudo systemctl restart smbd';
-    else if (action === 'enable') cmd = 'sudo systemctl enable smbd';
-    else if (action === 'disable') cmd = 'sudo systemctl disable smbd';
-    else throw new Error(`Invalid action: ${action}`);
+    const allowed = new Set(['start', 'stop', 'restart', 'enable', 'disable']);
+    if (!allowed.has(action)) throw new Error(`Invalid action`);
 
-    const res = await runCommand(cmd);
+    const res = await runExecFile('sudo', ['systemctl', action, 'smbd']);
     if (res.code !== 0) {
-        throw new Error(`Failed to ${action} Samba: ${res.stderr || res.error?.message}`);
+        throw new Error(`Failed to ${action} Samba: ${res.stderr}`);
     }
     return { ok: true };
 }
@@ -233,41 +265,59 @@ async function getShares() {
  * Creates or updates a share.
  */
 async function saveShare(name, config) {
-    if (!name || !name.trim()) throw new Error('Share name is required');
+    if (!name || typeof name !== 'string' || !name.trim()) throw new Error('Share name is required');
+    const trimmedName = name.trim();
+    if (RESERVED_SECTIONS.has(trimmedName.toLowerCase())) {
+        throw new Error('Invalid share name');
+    }
+    assertSafe(RE_SHARE_NAME, trimmedName, 'share name');
     const sections = await readConfFile();
-    
+
     // Check if share exists (case insensitive)
-    const existingIndex = sections.findIndex(s => s.name && s.name.toLowerCase() === name.toLowerCase());
-    
+    const existingIndex = sections.findIndex(s => s.name && s.name.toLowerCase() === trimmedName.toLowerCase());
+
     const isWritable = config.writable !== undefined ? config.writable : (config.readOnly !== undefined ? !config.readOnly : true);
     const isBrowsable = config.browsable !== undefined ? config.browsable : (config.browseable !== undefined ? config.browseable : true);
     const isGuestOk = config.guestOk !== undefined ? config.guestOk : (config.guest !== undefined ? config.guest : false);
-    
+
+    const createMask = config.createMask || (isWritable ? '0664' : '0644');
+    const dirMask = config.dirMask || (isWritable ? '0775' : '0755');
+    assertSafe(RE_MODE, createMask, 'create mask');
+    assertSafe(RE_MODE, dirMask, 'directory mask');
+
+    const pathStr = config.path || '';
+    const commentStr = config.comment || '';
+    if (hasUnsafeChars(pathStr)) throw new Error('Invalid value for path');
+    if (hasUnsafeChars(commentStr)) throw new Error('Invalid value for comment');
+
     // Create new section object
     const newSec = {
-        name: name.trim(),
+        name: trimmedName,
         isModified: true,
         properties: {
-            path: config.path || '',
-            comment: config.comment || '',
+            path: pathStr,
+            comment: commentStr,
             writable: isWritable ? 'yes' : 'no',
             'read only': isWritable ? 'no' : 'yes',
             browseable: isBrowsable ? 'yes' : 'no',
             'guest ok': isGuestOk ? 'yes' : 'no',
-            'create mask': config.createMask || (isWritable ? '0664' : '0644'),
-            'directory mask': config.dirMask || (isWritable ? '0775' : '0755')
+            'create mask': createMask,
+            'directory mask': dirMask
         }
     };
-    
+
     const usersStr = config.validUsers !== undefined ? config.validUsers : (Array.isArray(config.users) ? config.users.join(' ') : config.users || '');
-    if (usersStr.trim()) {
+    if (typeof usersStr === 'string' && usersStr.trim()) {
+        if (hasUnsafeChars(usersStr)) throw new Error('Invalid value for validUsers');
         newSec.properties['valid users'] = usersStr.trim();
     }
-    
-    if (config.forceUser && config.forceUser.trim()) {
+
+    if (config.forceUser && typeof config.forceUser === 'string' && config.forceUser.trim()) {
+        if (hasUnsafeChars(config.forceUser)) throw new Error('Invalid value for forceUser');
         newSec.properties['force user'] = config.forceUser.trim();
     }
-    if (config.hostsAllow && config.hostsAllow.trim()) {
+    if (config.hostsAllow && typeof config.hostsAllow === 'string' && config.hostsAllow.trim()) {
+        if (hasUnsafeChars(config.hostsAllow)) throw new Error('Invalid value for hostsAllow');
         newSec.properties['hosts allow'] = config.hostsAllow.trim();
     }
     if (config.hideDotfiles !== undefined) {
@@ -280,21 +330,26 @@ async function saveShare(name, config) {
         newSec.properties['recycle:versions'] = 'yes';
     }
 
+    for (const [key, value] of Object.entries(newSec.properties)) {
+        if (typeof value === 'string' && hasUnsafeChars(value)) {
+            throw new Error('Invalid value for ' + key);
+        }
+    }
+
     if (existingIndex !== -1) {
         // If we are renaming the share, we might have an originalName
-        if (config.originalName && config.originalName.toLowerCase() !== name.toLowerCase()) {
-            // Delete original name if it's different and replace it
+        if (config.originalName && typeof config.originalName === 'string' && config.originalName.toLowerCase() !== trimmedName.toLowerCase()) {
+            assertSafe(RE_SHARE_NAME, config.originalName.trim(), 'original share name');
             const origIndex = sections.findIndex(s => s.name && s.name.toLowerCase() === config.originalName.toLowerCase());
             if (origIndex !== -1) sections.splice(origIndex, 1);
             sections.push(newSec);
         } else {
-            // Just update existing
             sections[existingIndex] = newSec;
         }
     } else {
         sections.push(newSec);
     }
-    
+
     await writeConfFile(sections);
     return { ok: true };
 }
@@ -303,12 +358,16 @@ async function saveShare(name, config) {
  * Deletes a share.
  */
 async function deleteShare(name) {
-    if (!name) throw new Error('Share name is required');
+    if (!name || typeof name !== 'string') throw new Error('Share name is required');
+    assertSafe(RE_SHARE_NAME, name.trim(), 'share name');
+    if (RESERVED_SECTIONS.has(name.trim().toLowerCase())) {
+        throw new Error('Invalid share name');
+    }
     const sections = await readConfFile();
-    
+
     const index = sections.findIndex(s => s.name && s.name.toLowerCase() === name.toLowerCase());
-    if (index === -1) throw new Error(`Share "${name}" not found`);
-    
+    if (index === -1) throw new Error(`Share not found`);
+
     sections.splice(index, 1);
     await writeConfFile(sections);
     return { ok: true };
@@ -348,11 +407,25 @@ async function saveGlobalSettings(config) {
     
     const globalSec = sections[globalIndex];
     globalSec.isModified = true;
-    
-    globalSec.properties['workgroup'] = config.workgroup || 'WORKGROUP';
-    if (config.serverString !== undefined) globalSec.properties['server string'] = config.serverString;
-    if (config.mapToGuest !== undefined) globalSec.properties['map to guest'] = config.mapToGuest;
-    
+
+    const workgroup = config.workgroup || 'WORKGROUP';
+    if (hasUnsafeChars(workgroup)) throw new Error('Invalid value for workgroup');
+    globalSec.properties['workgroup'] = workgroup;
+    if (config.serverString !== undefined) {
+        if (hasUnsafeChars(config.serverString)) throw new Error('Invalid value for serverString');
+        globalSec.properties['server string'] = config.serverString;
+    }
+    if (config.mapToGuest !== undefined) {
+        if (hasUnsafeChars(config.mapToGuest)) throw new Error('Invalid value for mapToGuest');
+        globalSec.properties['map to guest'] = config.mapToGuest;
+    }
+
+    for (const [key, value] of Object.entries(globalSec.properties)) {
+        if (typeof value === 'string' && hasUnsafeChars(value)) {
+            throw new Error('Invalid value for ' + key);
+        }
+    }
+
     await writeConfFile(sections);
     return { ok: true };
 }
@@ -417,30 +490,46 @@ async function getUsers() {
  * Toggles system Unix user creation if user doesn't exist.
  */
 async function saveUser(username, password, createSystemUser = false) {
-    if (!username || !username.trim()) throw new Error('Username is required');
-    if (!password) throw new Error('Password is required');
-    
+    if (!username || typeof username !== 'string' || !username.trim()) throw new Error('Username is required');
+    if (!password || typeof password !== 'string') throw new Error('Password is required');
+    assertSafe(RE_USERNAME, username.trim(), 'username');
+    if (password.includes('\n') || password.includes('\0')) {
+        throw new Error('Invalid password');
+    }
+    const safeUser = username.trim();
+
     // Check if system user exists
     const usersInfo = await getUsers();
-    const systemUserExists = usersInfo.systemUsers.some(u => u.username === username);
-    
+    const systemUserExists = usersInfo.systemUsers.some(u => u.username === safeUser);
+
     if (!systemUserExists) {
         if (!createSystemUser) {
-            throw new Error(`Unix user "${username}" does not exist. Enable "Create system user" first.`);
+            throw new Error(`Unix user does not exist. Enable "Create system user" first.`);
         }
-        // Create system account with no shell and no home (secure for Samba-only)
-        const userAddRes = await runCommand(`sudo useradd -M -s /usr/sbin/nologin ${username}`);
+        const userAddRes = await runExecFile('sudo', ['useradd', '-M', '-s', '/usr/sbin/nologin', safeUser]);
         if (userAddRes.code !== 0) {
             throw new Error(`Failed to create system user: ${userAddRes.stderr}`);
         }
     }
-    
-    // Configure Samba password (non-interactive)
-    const smbpasswdRes = await runCommand(`echo -e "${password}\n${password}" | sudo smbpasswd -s -a ${username}`);
-    if (smbpasswdRes.code !== 0) {
-        throw new Error(`Failed to set Samba password: ${smbpasswdRes.stderr}`);
-    }
-    
+
+    // Configure Samba password (non-interactive) via stdin so it never touches argv/shell
+    await new Promise((resolve, reject) => {
+        const child = spawn('sudo', ['smbpasswd', '-s', '-a', safeUser]);
+        let stderr = '';
+        child.stderr.on('data', (d) => { stderr += d.toString(); });
+        child.on('error', () => reject(new Error('Failed to set Samba password')));
+        child.on('close', (code) => {
+            if (code === 0) resolve();
+            else {
+                const trimmed = stderr.trim();
+                reject(new Error('Failed to set Samba password' + (trimmed ? `: ${trimmed}` : '')));
+            }
+        });
+        child.stdin.on('error', () => {});
+        child.stdin.write(`${password}\n${password}\n`);
+        child.stdin.end();
+    });
+
     return { ok: true };
 }
 
@@ -448,9 +537,10 @@ async function saveUser(username, password, createSystemUser = false) {
  * Deletes a Samba user.
  */
 async function deleteUser(username) {
-    if (!username) throw new Error('Username is required');
-    
-    const res = await runCommand(`sudo smbpasswd -x ${username}`);
+    if (!username || typeof username !== 'string') throw new Error('Username is required');
+    assertSafe(RE_USERNAME, username.trim(), 'username');
+
+    const res = await runExecFile('sudo', ['smbpasswd', '-x', username.trim()]);
     if (res.code !== 0) {
         throw new Error(`Failed to delete Samba user: ${res.stderr}`);
     }
@@ -527,39 +617,52 @@ async function getConnections() {
  * Fixes directory permissions and creates path if missing.
  */
 async function fixPermissions(dirPath, owner, mode) {
-    if (!dirPath || !dirPath.trim()) throw new Error('Path is required');
+    if (!dirPath || typeof dirPath !== 'string' || !dirPath.trim()) throw new Error('Path is required');
     const targetPath = path.resolve(dirPath.trim());
-    
-    // Safety check - do not allow fixing permissions on root or system folders
-    const forbidden = new Set(['/', '/etc', '/var', '/usr', '/bin', '/sbin', '/boot', '/sys', '/proc', '/dev', '/lib', '/lib64']);
-    if (forbidden.has(targetPath)) {
+
+    if (FORBIDDEN_TARGETS.has(targetPath)) {
         throw new Error('Modifying permissions on system critical paths is not allowed.');
     }
-    
-    // Create folder if it doesn't exist
-    if (!fs.existsSync(targetPath)) {
-        const mkdirRes = await runCommand(`sudo mkdir -p ${targetPath}`);
+    for (const denied of FORBIDDEN_TARGETS) {
+        if (targetPath.startsWith(denied + path.sep)) {
+            throw new Error('Modifying permissions on system critical paths is not allowed.');
+        }
+    }
+
+    if (fs.existsSync(targetPath)) {
+        try {
+            const lst = fs.lstatSync(targetPath);
+            if (lst.isSymbolicLink()) {
+                throw new Error('Refusing to operate on a symbolic link');
+            }
+        } catch (e) {
+            if (e.message.startsWith('Refusing')) throw e;
+        }
+    } else {
+        const mkdirRes = await runExecFile('sudo', ['mkdir', '-p', targetPath]);
         if (mkdirRes.code !== 0) {
             throw new Error(`Failed to create directory: ${mkdirRes.stderr}`);
         }
     }
-    
-    // Fix owner
-    if (owner && owner.trim()) {
-        const chownRes = await runCommand(`sudo chown -R ${owner.trim()} ${targetPath}`);
+
+    if (owner && typeof owner === 'string' && owner.trim()) {
+        const ownerVal = owner.trim();
+        assertSafe(RE_OWNER, ownerVal, 'owner');
+        const chownRes = await runExecFile('sudo', ['chown', '-R', '-h', ownerVal, targetPath]);
         if (chownRes.code !== 0) {
             throw new Error(`Failed to set owner: ${chownRes.stderr}`);
         }
     }
-    
-    // Fix permissions mode
-    if (mode && mode.trim()) {
-        const chmodRes = await runCommand(`sudo chmod -R ${mode.trim()} ${targetPath}`);
+
+    if (mode && typeof mode === 'string' && mode.trim()) {
+        const modeVal = mode.trim();
+        assertSafe(RE_MODE, modeVal, 'mode');
+        const chmodRes = await runExecFile('sudo', ['chmod', '-R', modeVal, targetPath]);
         if (chmodRes.code !== 0) {
             throw new Error(`Failed to set mode: ${chmodRes.stderr}`);
         }
     }
-    
+
     return { ok: true };
 }
 
@@ -586,9 +689,14 @@ async function getLogs() {
 }
 
 async function browse(dirPath, showHidden = false) {
-    const targetPath = dirPath ? path.resolve(dirPath) : os.homedir();
-    
     try {
+        if (dirPath !== undefined && dirPath !== null && typeof dirPath !== 'string') {
+            throw new Error('Invalid path');
+        }
+        const targetPath = dirPath ? path.resolve(BROWSE_ROOT, dirPath) : BROWSE_ROOT;
+        if (targetPath !== BROWSE_ROOT && !targetPath.startsWith(BROWSE_ROOT + path.sep)) {
+            throw new Error('Path outside allowed root');
+        }
         const items = fs.readdirSync(targetPath, { withFileTypes: true });
         const folders = [];
         const files = [];

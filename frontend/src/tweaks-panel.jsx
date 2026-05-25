@@ -116,7 +116,14 @@ function useTweaks(defaults) {
     try {
       const stored = localStorage.getItem('dashboard_tweaks');
       if (stored) {
-        return { ...defaults, ...JSON.parse(stored) };
+        const parsed = JSON.parse(stored);
+        if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return defaults;
+        const clean = {};
+        for (const k of Object.keys(parsed)) {
+          if (k === '__proto__' || k === 'constructor' || k === 'prototype') continue;
+          clean[k] = parsed[k];
+        }
+        return { ...defaults, ...clean };
       }
     } catch (e) {}
     return defaults;
@@ -172,6 +179,7 @@ function TweaksPanel({ title = 'Tweaks', children }) {
 
   useEffect(() => {
     const onMsg = (e) => {
+      if (e.origin !== window.location.origin) return;
       const t = e?.data?.type;
       if (t === '__activate_edit_mode') setOpen(true);
       else if (t === '__deactivate_edit_mode') setOpen(false);
@@ -362,15 +370,14 @@ function TweakText({ label, value, placeholder, onChange }) {
 
 function TweakNumber({ label, value, min, max, step = 1, unit = '', onChange }) {
   const clamp = (n) => {
-    if (min != null && n < min) return min;
-    if (max != null && n > max) return max;
-    return n;
+    if (!Number.isFinite(n)) return Number.isFinite(min) ? min : (Number.isFinite(max) ? max : 0);
+    return Math.min(max ?? Infinity, Math.max(min ?? -Infinity, n));
   };
   const startRef = useRef({ x: 0, val: 0 });
   const onScrubStart = (e) => {
     e.preventDefault();
     startRef.current = { x: e.clientX, val: value };
-    const decimals = (String(step).split('.')[1] || '').length;
+    const decimals = step ? Math.max(0, -Math.floor(Math.log10(step))) : 0;
     const move = (ev) => {
       const dx = ev.clientX - startRef.current.x;
       const raw = startRef.current.val + dx * step;

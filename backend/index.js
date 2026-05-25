@@ -8,9 +8,18 @@ const https = require('https');
 const http = require('http');
 const os = require('os');
 const url = require('url');
+const crypto = require('crypto');
 const { WebSocketServer } = require('ws');
 const pty = require('node-pty');
 const fileUpload = require('express-fileupload');
+
+function timingSafeCompare(a, b) {
+    if (typeof a !== 'string' || typeof b !== 'string') return false;
+    const A = Buffer.from(a);
+    const B = Buffer.from(b);
+    if (A.length !== B.length) return false;
+    return crypto.timingSafeEqual(A, B);
+}
 
 const app = express();
 const PORT = process.env.PORT || 80;
@@ -379,6 +388,7 @@ const runDiscoveryInBackground = () => {
             inflightDiscovery = null;
         }
     })();
+    inflightDiscovery.catch(err => console.error('[discovery]', err && err.message));
 };
 
 const discoverServices = async () => {
@@ -536,12 +546,12 @@ app.delete('/api/services/manual/:id', (req, res) => {
 });
 
 app.post('/api/docker/control', async (req, res) => {
-    const { name, action } = req.body;
+    const { name, action } = req.body || {};
     if (!name || !['start', 'stop', 'restart'].includes(action)) {
         return res.status(400).json({ error: 'Invalid name or action' });
     }
     try {
-        await runCommand(`docker ${action} ${JSON.stringify(name)}`);
+        await runCommand(`docker ${action} ${shellQuote(name)}`);
         discoveryCache = null; // Clear cache to show new status instantly
         res.json({ ok: true });
     } catch (e) {
@@ -555,7 +565,7 @@ app.get('/api/docker/logs', async (req, res) => {
         return res.status(400).json({ error: 'Missing container name' });
     }
     try {
-        const logs = await runCommand(`docker logs --tail 200 ${JSON.stringify(name)} 2>&1`);
+        const logs = await runCommand(`docker logs --tail 200 ${shellQuote(name)} 2>&1`);
         res.json({ logs });
     } catch (e) {
         res.status(500).json({ error: e.message });
@@ -801,8 +811,7 @@ const getActiveInterfaceInfo = async () => {
                 for (const line of lines) {
                     if (line.includes(iface)) {
                         const parts = line.trim().split(/\s+/);
-                        const qualStr = parts[2].replace('.', '');
-                        const qualVal = parseFloat(qualStr);
+                        const qualVal = parseFloat(parts[2]);
                         if (!isNaN(qualVal)) {
                             linkQuality = qualVal;
                         }
@@ -1056,6 +1065,19 @@ let inflightAgentScan = null;
 
 const shellQuote = (s) => `'${String(s).replace(/'/g, "'\\''")}'`;
 
+const FILE_API_ROOT = path.resolve(process.env.FILE_API_ROOT || '/');
+const FILE_API_DENY = ['/etc','/root','/boot','/usr','/var','/proc','/sys','/dev','/lib','/lib64','/sbin','/bin'];
+function safeFilePath(p) {
+    if (typeof p !== 'string' || !p) throw Object.assign(new Error('Invalid path'), { status: 400 });
+    const abs = path.resolve(FILE_API_ROOT, p);
+    if (!abs.startsWith(FILE_API_ROOT)) throw Object.assign(new Error('Path outside allowed root'), { status: 403 });
+    if (FILE_API_DENY.some(d => abs === d || abs.startsWith(d + path.sep))) throw Object.assign(new Error('Path denied'), { status: 403 });
+    return abs;
+}
+function errMsg(e) {
+    return process.env.NODE_ENV === 'production' ? 'Internal error' : e.message;
+}
+
 const runAsUser = (user, cmd, timeoutMs = 2000) => new Promise((resolve) => {
     exec(`sudo -n -u ${shellQuote(user)} -- bash -lc ${shellQuote(cmd)}`, { timeout: timeoutMs }, (error, stdout, stderr) => {
         if (error && !stdout) return resolve('');
@@ -1138,6 +1160,7 @@ const discoverAgents = async () => {
             inflightAgentScan = null;
         }
     })();
+    inflightAgentScan.catch(err => console.error('[agent-discovery]', err && err.message));
     return inflightAgentScan;
 };
 
@@ -1162,7 +1185,7 @@ app.get('/api/samba/status', async (req, res) => {
 });
 
 app.post('/api/samba/status', async (req, res) => {
-    const { action } = req.body;
+    const { action } = req.body || {};
     try {
         await samba.controlService(action);
         res.json({ ok: true });
@@ -1181,7 +1204,7 @@ app.get('/api/samba/shares', async (req, res) => {
 });
 
 app.post('/api/samba/shares', async (req, res) => {
-    const { name } = req.body;
+    const { name } = req.body || {};
     try {
         const result = await samba.saveShare(name, req.body);
         res.json(result);
@@ -1210,7 +1233,7 @@ app.get('/api/samba/global', async (req, res) => {
 });
 
 app.post('/api/samba/global', async (req, res) => {
-    const { workgroup, serverString, mapToGuest } = req.body;
+    const { workgroup, serverString, mapToGuest } = req.body || {};
     try {
         const result = await samba.saveGlobalSettings({ workgroup, serverString, mapToGuest });
         res.json(result);
@@ -1229,7 +1252,7 @@ app.get('/api/samba/users', async (req, res) => {
 });
 
 app.post('/api/samba/users', async (req, res) => {
-    const { username, password, createSystemUser } = req.body;
+    const { username, password, createSystemUser } = req.body || {};
     try {
         const result = await samba.saveUser(username, password, createSystemUser);
         res.json(result);
@@ -1258,7 +1281,7 @@ app.get('/api/samba/connections', async (req, res) => {
 });
 
 app.post('/api/samba/permissions', async (req, res) => {
-    const { path: dirPath, owner, mode } = req.body;
+    const { path: dirPath, owner, mode } = req.body || {};
     try {
         const result = await samba.fixPermissions(dirPath, owner, mode);
         res.json(result);
@@ -1288,7 +1311,7 @@ app.get('/api/samba/browse', async (req, res) => {
 
 // Power Controls Endpoint
 app.post('/api/power', (req, res) => {
-    const { action } = req.body;
+    const { action } = req.body || {};
     if (!['reboot', 'shutdown', 'sleep', 'logoff'].includes(action)) {
         return res.status(400).json({ error: 'Invalid power action' });
     }
@@ -1362,7 +1385,7 @@ app.post('/api/updates/check', async (req, res) => {
 });
 
 app.post('/api/updates/apply', (req, res) => {
-    const { packages } = req.body;
+    const { packages } = req.body || {};
     if (!packages || !Array.isArray(packages) || packages.length === 0) {
         return res.status(400).json({ error: 'Packages must be a non-empty array' });
     }
@@ -1401,7 +1424,7 @@ app.get('/api/ssh/keys', async (req, res) => {
                 const pubPath = path.join(sshDir, file);
                 try {
                     const pubContent = fs.readFileSync(pubPath, 'utf8').trim();
-                    const keygenOut = await runCommand(`ssh-keygen -l -f ${JSON.stringify(pubPath)}`);
+                    const keygenOut = await runCommand(`ssh-keygen -l -f ${shellQuote(pubPath)}`);
                     if (keygenOut) {
                         const parts = keygenOut.trim().split(/\s+/);
                         const bits = parts[0];
@@ -1436,36 +1459,47 @@ app.get('/api/ssh/keys', async (req, res) => {
 });
 
 app.post('/api/ssh/keys/generate', async (req, res) => {
-    const { name, type, bits, comment, passphrase } = req.body;
-    if (!name) return res.status(400).json({ error: 'Key name is required' });
-    
-    const cleanName = name.replace(/[^a-zA-Z0-9_-]/g, '');
-    const keyType = ['ED25519', 'RSA', 'ECDSA'].includes(type) ? type.toLowerCase() : 'ed25519';
+    const { name, type, bits, comment, passphrase } = req.body || {};
+    if (typeof name !== 'string' || !/^[A-Za-z0-9_.-]+$/.test(name)) {
+        return res.status(400).json({ error: 'Invalid key name' });
+    }
+    const keyType = ['rsa', 'ed25519', 'ecdsa'].includes(typeof type === 'string' ? type.toLowerCase() : '')
+        ? type.toLowerCase()
+        : 'ed25519';
     const bitsVal = parseInt(bits, 10) || 2048;
-    const commentVal = comment ? comment.slice(0, 100) : 'hosted-dashboard-key';
-    const passVal = passphrase ? passphrase : '';
-    
-    const keyPath = `/home/ayman/.ssh/${cleanName}`;
-    
+    const commentVal = typeof comment === 'string' ? comment.slice(0, 100) : 'hosted-dashboard-key';
+    const passVal = typeof passphrase === 'string' ? passphrase : '';
+
+    const keyPath = `/home/ayman/.ssh/${name}`;
+
     try {
         if (fs.existsSync(keyPath)) {
             return res.status(400).json({ error: 'Key file already exists' });
         }
-        
-        let cmd = `sudo -u ayman ssh-keygen -t ${keyType} -C ${JSON.stringify(commentVal)} -N ${JSON.stringify(passVal)} -f ${JSON.stringify(keyPath)}`;
+
+        const args = ['-n', '-u', 'ayman', '--', 'ssh-keygen',
+            '-t', keyType,
+            '-C', commentVal,
+            '-N', passVal,
+            '-f', keyPath];
         if (keyType === 'rsa' || keyType === 'ecdsa') {
-            cmd += ` -b ${bitsVal}`;
+            args.push('-b', String(bitsVal));
         }
-        
-        await runCommand(cmd);
-        res.json({ ok: true, name: cleanName });
+
+        await new Promise((resolve, reject) => {
+            execFile('sudo', args, { timeout: 15000 }, (error, stdout, stderr) => {
+                if (error) return reject(error);
+                resolve(stdout);
+            });
+        });
+        res.json({ ok: true, name });
     } catch (e) {
-        res.status(500).json({ error: e.message });
+        res.status(500).json({ error: errMsg(e) });
     }
 });
 
 app.post('/api/ssh/keys/deploy', async (req, res) => {
-    const { keyId, host, port, username, password } = req.body;
+    const { keyId, host, port, username, password } = req.body || {};
     if (!keyId || !host || !username) {
         return res.status(400).json({ error: 'keyId, host, and username are required' });
     }
@@ -1481,7 +1515,7 @@ app.post('/api/ssh/keys/deploy', async (req, res) => {
         const conn = new Client();
         
         conn.on('ready', () => {
-            const cmd = `mkdir -p ~/.ssh && chmod 700 ~/.ssh && echo ${JSON.stringify(pubKeyContent)} >> ~/.ssh/authorized_keys && chmod 600 ~/.ssh/authorized_keys`;
+            const cmd = `mkdir -p ~/.ssh && chmod 700 ~/.ssh && echo ${shellQuote(pubKeyContent)} >> ~/.ssh/authorized_keys && chmod 600 ~/.ssh/authorized_keys`;
             conn.exec(cmd, (err, stream) => {
                 if (err) {
                     conn.end();
@@ -1549,8 +1583,9 @@ app.delete('/api/samba/connections/:pid', async (req, res) => {
 });
 
 app.get('/api/files/view', (req, res) => {
-    const filePath = req.query.path;
-    if (!filePath) return res.status(400).json({ error: 'Missing path' });
+    let filePath;
+    try { filePath = safeFilePath(req.query.path); }
+    catch (e) { return res.status(e.status || 400).json({ error: e.message }); }
     try {
         if (!fs.existsSync(filePath)) {
             return res.status(404).json({ error: 'File not found' });
@@ -1576,8 +1611,10 @@ app.get('/api/files/view', (req, res) => {
 });
 
 app.post('/api/files/save', (req, res) => {
-    const { path: filePath, content } = req.body;
-    if (!filePath) return res.status(400).json({ error: 'Missing path' });
+    const { path: rawPath, content } = req.body || {};
+    let filePath;
+    try { filePath = safeFilePath(rawPath); }
+    catch (e) { return res.status(e.status || 400).json({ error: e.message }); }
     try {
         fs.writeFileSync(filePath, content, 'utf8');
         res.json({ ok: true });
@@ -1624,7 +1661,7 @@ app.get('/api/systemd/units', async (req, res) => {
 });
 
 app.post('/api/systemd/control', async (req, res) => {
-    const { unit, action } = req.body;
+    const { unit, action } = req.body || {};
     if (!unit || !['start', 'stop', 'restart', 'enable', 'disable', 'reload'].includes(action)) {
         return res.status(400).json({ error: 'Invalid unit or action' });
     }
@@ -1688,7 +1725,7 @@ app.get('/api/processes', async (req, res) => {
 app.post('/api/processes/:pid/signal', async (req, res) => {
     const pid = parseInt(req.params.pid, 10);
     if (!pid || pid <= 1 || isNaN(pid)) return res.status(400).json({ error: 'Invalid PID' });
-    const { signal } = req.body;
+    const { signal } = req.body || {};
     const sigMap = { SIGTERM: '15', SIGKILL: '9', SIGHUP: '1' };
     const sig = sigMap[signal];
     if (!sig) return res.status(400).json({ error: 'Invalid signal. Use SIGTERM, SIGKILL, or SIGHUP' });
@@ -1743,12 +1780,12 @@ app.get('/api/docker/images', async (req, res) => {
 });
 
 app.post('/api/docker/images/pull', async (req, res) => {
-    const { image } = req.body;
+    const { image } = req.body || {};
     if (!image || !/^[a-zA-Z0-9][a-zA-Z0-9_.+\-/:@]*$/.test(image)) {
         return res.status(400).json({ error: 'Invalid image name' });
     }
     try {
-        const out = await runCommandThrow(`docker pull ${JSON.stringify(image)} 2>&1`);
+        const out = await runCommandThrow(`docker pull ${shellQuote(image)} 2>&1`);
         res.json({ ok: true, output: out });
     } catch (e) {
         res.status(500).json({ error: e.message });
@@ -1761,7 +1798,7 @@ app.delete('/api/docker/images/:id', async (req, res) => {
         return res.status(400).json({ error: 'Invalid image id' });
     }
     try {
-        await runCommandThrow(`docker rmi ${JSON.stringify(id)} 2>&1`);
+        await runCommandThrow(`docker rmi ${shellQuote(id)} 2>&1`);
         res.json({ ok: true });
     } catch (e) {
         res.status(500).json({ error: e.message });
@@ -1837,6 +1874,7 @@ app.get('/api/logs/stream', async (req, res) => {
     let cmd = 'journalctl -f --output=json';
     if (unit) cmd += ` -u ${shellQuote(unit)}`;
     const proc = exec(cmd + ' 2>/dev/null');
+    proc.stderr?.on('data', () => {});
 
     proc.stdout?.on('data', (chunk) => {
         for (const line of chunk.toString().split('\n').filter(Boolean)) {
@@ -2003,7 +2041,7 @@ app.get('/api/cron', async (req, res) => {
 });
 
 app.post('/api/cron', async (req, res) => {
-    const { schedule, command, user } = req.body;
+    const { schedule, command, user } = req.body || {};
     if (!schedule || !command) return res.status(400).json({ error: 'schedule and command are required' });
     const targetUser = user === 'root' ? 'root' : TARGET_USER;
     try {
@@ -2017,7 +2055,8 @@ app.post('/api/cron', async (req, res) => {
 });
 
 app.post('/api/cron/toggle', async (req, res) => {
-    const { id, active, user } = req.body;
+    const { id, active, user } = req.body || {};
+    if (typeof id !== 'string' || !id) return res.status(400).json({ error: 'Invalid id' });
     const targetUser = user === 'root' ? 'root' : TARGET_USER;
     const idxToToggle = parseInt(id.split('-').pop(), 10);
     if (isNaN(idxToToggle)) return res.status(400).json({ error: 'Invalid id' });
@@ -2052,7 +2091,7 @@ app.post('/api/cron/toggle', async (req, res) => {
 });
 
 app.post('/api/cron/run', async (req, res) => {
-    const { command, user } = req.body;
+    const { command, user } = req.body || {};
     if (!command) return res.status(400).json({ error: 'command is required' });
     const targetUser = user === 'root' ? 'root' : TARGET_USER;
     try {
@@ -2069,7 +2108,8 @@ app.post('/api/cron/run', async (req, res) => {
 });
 
 app.delete('/api/cron/:id', async (req, res) => {
-    const { id } = req.params;
+    const { id } = req.params || {};
+    if (typeof id !== 'string' || !id) return res.status(400).json({ error: 'Invalid id' });
     const user = req.query.user === 'root' ? 'root' : TARGET_USER;
     const idxToDelete = parseInt(id.split('-').pop(), 10);
     if (isNaN(idxToDelete)) return res.status(400).json({ error: 'Invalid id' });
@@ -2202,7 +2242,7 @@ app.get('/api/backups', (req, res) => {
 });
 
 app.post('/api/backups', (req, res) => {
-    const { id, name, src, destType, dest, schedule, active, args } = req.body;
+    const { id, name, src, destType, dest, schedule, active, args } = req.body || {};
     if (!name || !src || !destType || !dest) {
         return res.status(400).json({ error: 'name, src, destType, and dest are required' });
     }
@@ -2332,8 +2372,10 @@ app.get('/api/disk/smart', async (req, res) => {
 
 // ─── File Operations (delete, move, copy, mkdir) ──────────────────────────────
 app.delete('/api/files', (req, res) => {
-    const filePath = req.query.path;
-    if (!filePath || filePath === '/') return res.status(400).json({ error: 'Invalid path' });
+    let filePath;
+    try { filePath = safeFilePath(req.query.path); }
+    catch (e) { return res.status(e.status || 400).json({ error: e.message }); }
+    if (filePath === '/') return res.status(400).json({ error: 'Invalid path' });
     try {
         const stat = fs.statSync(filePath);
         if (stat.isDirectory()) {
@@ -2354,7 +2396,7 @@ app.post('/api/files/upload-chunk', async (req, res) => {
             console.error('[upload-chunk] req.files.chunk is missing!');
             return res.status(400).json({ error: 'No chunk file was uploaded.' });
         }
-        const { dir, fileName, chunkIndex, totalChunks } = req.body;
+        const { dir, fileName, chunkIndex, totalChunks } = req.body || {};
         if (!dir || !fileName || chunkIndex === undefined || totalChunks === undefined) {
             console.error('[upload-chunk] missing parameters:', { dir, fileName, chunkIndex, totalChunks });
             return res.status(400).json({ error: 'Missing parameters.' });
@@ -2363,9 +2405,10 @@ app.post('/api/files/upload-chunk', async (req, res) => {
         const safeFileName = path.basename(fileName);
         const chunkIdx = parseInt(chunkIndex, 10);
         const totalCh = parseInt(totalChunks, 10);
-        
-        // Prevent path traversal in directory
-        const resolvedDir = path.resolve(dir);
+
+        let resolvedDir;
+        try { resolvedDir = safeFilePath(dir); }
+        catch (e) { return res.status(e.status || 400).json({ error: e.message }); }
         
         const tempDir = path.join(__dirname, 'data', 'temp_uploads', safeFileName);
         if (!fs.existsSync(tempDir)) {
@@ -2432,8 +2475,9 @@ app.post('/api/files/upload-chunk', async (req, res) => {
 });
 
 app.get('/api/files/download', (req, res) => {
-    const { path: filePath } = req.query;
-    if (!filePath) return res.status(400).json({ error: 'Missing path' });
+    let filePath;
+    try { filePath = safeFilePath(req.query.path); }
+    catch (e) { return res.status(e.status || 400).json({ error: e.message }); }
     try {
         if (!fs.existsSync(filePath)) {
             return res.status(404).json({ error: 'File not found' });
@@ -2449,10 +2493,12 @@ app.get('/api/files/download', (req, res) => {
 });
 
 app.post('/api/files/move', (req, res) => {
-    const { from, to } = req.body;
-    if (!from || !to) return res.status(400).json({ error: 'Missing from/to' });
+    const { from, to } = req.body || {};
+    let safeFrom, safeTo;
+    try { safeFrom = safeFilePath(from); safeTo = safeFilePath(to); }
+    catch (e) { return res.status(e.status || 400).json({ error: e.message }); }
     try {
-        fs.renameSync(from, to);
+        fs.renameSync(safeFrom, safeTo);
         res.json({ ok: true });
     } catch (e) {
         res.status(500).json({ error: e.message });
@@ -2460,14 +2506,16 @@ app.post('/api/files/move', (req, res) => {
 });
 
 app.post('/api/files/copy', async (req, res) => {
-    const { from, to } = req.body;
-    if (!from || !to) return res.status(400).json({ error: 'Missing from/to' });
+    const { from, to } = req.body || {};
+    let safeFrom, safeTo;
+    try { safeFrom = safeFilePath(from); safeTo = safeFilePath(to); }
+    catch (e) { return res.status(e.status || 400).json({ error: e.message }); }
     try {
-        const stat = fs.statSync(from);
+        const stat = fs.statSync(safeFrom);
         if (stat.isDirectory()) {
-            await runCommandThrow(`cp -a ${shellQuote(from)} ${shellQuote(to)}`);
+            await runCommandThrow(`cp -a ${shellQuote(safeFrom)} ${shellQuote(safeTo)}`);
         } else {
-            fs.copyFileSync(from, to);
+            fs.copyFileSync(safeFrom, safeTo);
         }
         res.json({ ok: true });
     } catch (e) {
@@ -2476,10 +2524,12 @@ app.post('/api/files/copy', async (req, res) => {
 });
 
 app.post('/api/files/mkdir', (req, res) => {
-    const { path: dirPath } = req.body;
-    if (!dirPath) return res.status(400).json({ error: 'Missing path' });
+    const { path: dirPath } = req.body || {};
+    let safeDir;
+    try { safeDir = safeFilePath(dirPath); }
+    catch (e) { return res.status(e.status || 400).json({ error: e.message }); }
     try {
-        fs.mkdirSync(dirPath, { recursive: true });
+        fs.mkdirSync(safeDir, { recursive: true });
         res.json({ ok: true });
     } catch (e) {
         res.status(500).json({ error: e.message });
@@ -2492,7 +2542,7 @@ app.get('/api/alerts/config', (req, res) => {
 });
 
 app.post('/api/alerts/config', (req, res) => {
-    const { cpu, ram, disk } = req.body;
+    const { cpu, ram, disk } = req.body || {};
     state.alerts = {
         cpu: Math.min(100, Math.max(1, parseInt(cpu, 10) || 90)),
         ram: Math.min(100, Math.max(1, parseInt(ram, 10) || 90)),
@@ -2512,7 +2562,7 @@ if (fs.existsSync(frontendPath)) {
 
 const server = http.createServer(app);
 
-const TERMINAL_ALLOW_LAN = process.env.DASHBOARD_TERMINAL_ALLOW_LAN !== 'false';
+const TERMINAL_ALLOW_LAN = process.env.DASHBOARD_TERMINAL_ALLOW_LAN === 'true';
 const wss = new WebSocketServer({ noServer: true });
 
 const isLoopback = (addr) => {
@@ -2540,7 +2590,7 @@ server.on('upgrade', (req, socket, head) => {
     const remote = req.socket.remoteAddress;
     const loopback = isLoopback(remote);
     const sameOrigin = isSameOriginUpgrade(req);
-    const tokenOk = AGENT_TOKEN && parsed.query.key === AGENT_TOKEN;
+    const tokenOk = AGENT_TOKEN && timingSafeCompare(parsed.query.key || '', AGENT_TOKEN);
     const allow = loopback || tokenOk || (TERMINAL_ALLOW_LAN && sameOrigin);
     if (!allow) {
         const reason = !sameOrigin ? 'origin-mismatch' : 'lan-disabled';
@@ -2647,7 +2697,17 @@ wss.on('connection', (ws, req) => {
                 if (privateKey && privateKey.trim()) {
                     let keyContent = privateKey;
                     if (!privateKey.includes('-----BEGIN')) {
-                        const localKeyPath = path.join('/home/ayman/.ssh', privateKey.trim());
+                        const keyName = privateKey.trim();
+                        if (!/^[A-Za-z0-9_.-]+$/.test(keyName)) {
+                            ws.send(JSON.stringify({ type: 'error', message: 'Invalid key name' }));
+                            return;
+                        }
+                        const SSH_DIR = '/home/ayman/.ssh';
+                        const localKeyPath = path.resolve(SSH_DIR, keyName);
+                        if (!localKeyPath.startsWith(SSH_DIR + path.sep)) {
+                            ws.send(JSON.stringify({ type: 'error', message: 'Invalid key name' }));
+                            return;
+                        }
                         if (fs.existsSync(localKeyPath)) {
                             keyContent = fs.readFileSync(localKeyPath, 'utf8');
                         }
@@ -2689,6 +2749,10 @@ wss.on('connection', (ws, req) => {
         }
 
         if (query && query.docker) {
+            if (!/^[a-zA-Z0-9][a-zA-Z0-9_.-]{0,63}$/.test(query.docker)) {
+                ws.close(1008, 'Invalid container');
+                return;
+            }
             command = 'docker';
             args = ['exec', '-it', query.docker, 'sh'];
         }

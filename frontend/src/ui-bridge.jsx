@@ -1,12 +1,19 @@
-import React, { createContext, useContext, useState, useRef, useCallback, useEffect } from 'react';
+import React, { createContext, useContext, useState, useRef, useCallback, useEffect, useLayoutEffect } from 'react';
 
 const UICtx = createContext(null);
 
 function UIProvider({ children }) {
   const [toasts, setToasts] = useState([]);
-  const [modal, setModal] = useState(null); // { node, key }
+  const [modal, setModal] = useState(null); // { node, key, onCancel }
   const toastSeq = useRef(0);
   const modalSeq = useRef(0);
+  const timersRef = useRef(new Map());
+
+  const dismissToast = useCallback((id) => {
+    const tid = timersRef.current.get(id);
+    if (tid) { clearTimeout(tid); timersRef.current.delete(id); }
+    setToasts(arr => arr.filter(x => x.id !== id));
+  }, []);
 
   const toast = useCallback((opts) => {
     const id = ++toastSeq.current;
@@ -20,25 +27,41 @@ function UIProvider({ children }) {
     };
     setToasts(arr => [...arr, t]);
     if (t.ttl) {
-      setTimeout(() => setToasts(arr => arr.filter(x => x.id !== id)), t.ttl);
+      const tid = setTimeout(() => {
+        timersRef.current.delete(t.id);
+        setToasts(arr => arr.filter(x => x.id !== t.id));
+      }, t.ttl);
+      timersRef.current.set(t.id, tid);
     }
     return id;
   }, []);
 
-  const dismissToast = useCallback((id) => {
-    setToasts(arr => arr.filter(x => x.id !== id));
+  useEffect(() => () => { timersRef.current.forEach(clearTimeout); timersRef.current.clear(); }, []);
+
+  const closeModalInternal = useCallback(() => {
+    setModal(prev => {
+      prev?.onCancel?.();
+      return null;
+    });
   }, []);
 
-  const openModal = useCallback((node) => {
+  const openModal = useCallback((node, onCancel) => {
     const key = ++modalSeq.current;
-    setModal({ node, key });
+    setModal({ node, key, onCancel });
     return key;
   }, []);
 
-  const closeModal = useCallback(() => setModal(null), []);
+  const closeModal = useCallback(() => closeModalInternal(), [closeModalInternal]);
 
   const confirm = useCallback((opts) => {
     return new Promise((resolve) => {
+      let settled = false;
+      const onResolve = (v) => {
+        if (settled) return;
+        settled = true;
+        setModal(null);
+        resolve(v);
+      };
       openModal(
         <ConfirmModal
           title={opts.title}
@@ -47,31 +70,32 @@ function UIProvider({ children }) {
           cancelLabel={opts.cancelLabel || 'Cancel'}
           dangerous={opts.dangerous}
           icon={opts.icon}
-          onResolve={(v) => { setModal(null); resolve(v); }}
-        />
+          onResolve={onResolve}
+        />,
+        () => onResolve(false)
       );
     });
   }, [openModal]);
 
   // expose globally
-  useEffect(() => {
+  useLayoutEffect(() => {
     window.UI = { toast, confirm, modal: openModal, closeModal, dismissToast };
   }, [toast, confirm, openModal, closeModal, dismissToast]);
 
   // Escape closes top modal
   useEffect(() => {
     if (!modal) return;
-    const onKey = (e) => { if (e.key === 'Escape') setModal(null); };
+    const onKey = (e) => { if (e.key === 'Escape') closeModalInternal(); };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [modal]);
+  }, [modal, closeModalInternal]);
 
   return (
     <UICtx.Provider value={{ toast, confirm, openModal, closeModal }}>
       {children}
       <ToastStack toasts={toasts} onDismiss={dismissToast} />
       {modal && (
-        <div className="modal-backdrop" onMouseDown={(e) => { if (e.target === e.currentTarget) setModal(null); }}>
+        <div className="modal-backdrop" onMouseDown={(e) => { if (e.target === e.currentTarget) closeModalInternal(); }}>
           {modal.node}
         </div>
       )}

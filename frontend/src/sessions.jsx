@@ -226,6 +226,7 @@ function RealTerminalPane({ session, active }) {
     params.set('rows', String(term.rows));
 
     const ws = new WebSocket(`${proto}://${window.location.host}/ws/terminal?${params.toString()}`);
+    ws.binaryType = 'arraybuffer';
     wsRef.current = ws;
 
     let opened = false;
@@ -252,10 +253,10 @@ function RealTerminalPane({ session, active }) {
     };
 
     ws.onmessage = (e) => {
-      if (typeof e.data === 'string') {
+      if (e.data instanceof ArrayBuffer) {
+        term.write(new TextDecoder().decode(e.data));
+      } else if (typeof e.data === 'string') {
         term.write(e.data);
-      } else if (e.data instanceof Blob) {
-        e.data.text().then((t) => term.write(t));
       }
     };
 
@@ -284,9 +285,10 @@ function RealTerminalPane({ session, active }) {
       try { fit.fit(); } catch (e) {}
     };
     window.addEventListener('resize', onWinResize);
-    setTimeout(onWinResize, 60);
+    const tid = setTimeout(onWinResize, 60);
 
     return () => {
+      clearTimeout(tid);
       window.removeEventListener('resize', onWinResize);
       try { ws.close(); } catch (e) {}
       try { term.dispose(); } catch (e) {}
@@ -316,6 +318,9 @@ function RealLogsPane({ session, active }) {
   const [logLines, setLogLines] = useState([]);
   const bodyRef = useRef(null);
   const { setSessions } = useSessions();
+  const mountedRef = useRef(true);
+  const ctrlRef = useRef(null);
+  useEffect(() => () => { mountedRef.current = false; ctrlRef.current?.abort(); }, []);
 
   useEffect(() => {
     if (active) {
@@ -326,12 +331,14 @@ function RealLogsPane({ session, active }) {
   useEffect(() => {
     const fetchLogs = async () => {
       try {
-        const res = await axios.get('/api/docker/logs', { params: { name: container } });
+        if (ctrlRef.current) ctrlRef.current.abort();
+        ctrlRef.current = new AbortController();
+        const res = await axios.get('/api/docker/logs', { params: { name: container }, signal: ctrlRef.current.signal });
         const text = res.data.logs || '';
         const lines = text.split('\n').filter(Boolean);
-        setLogLines(lines);
+        if (mountedRef.current) setLogLines(lines);
       } catch (e) {
-        setLogLines([`Failed to fetch logs: ${e.message}`]);
+        if (mountedRef.current) setLogLines([`Failed to fetch logs: ${e.message}`]);
       }
     };
 

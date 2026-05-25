@@ -264,6 +264,10 @@ function ShareBrowser({ share, onClose }) {
   const changePermissions = async (item) => {
     const mode = prompt(`Change permissions mode for "${item.name}" (octal):`, item.perm === '—' ? '0755' : '0755');
     if (!mode) return;
+    if (!/^0?[0-7]{3,4}$/.test(mode.trim())) {
+      window.UI.toast({ kind: 'err', title: 'Invalid mode', body: 'Mode must be an octal value like 0755 or 755.' });
+      return;
+    }
     try {
       await axios.post('/api/samba/permissions', { path: item.path, mode });
       window.UI.toast({ kind: 'ok', title: 'Permissions updated', body: item.name });
@@ -293,12 +297,15 @@ function ShareBrowser({ share, onClose }) {
           if (parentPath) fetchFiles(parentPath);
         }} disabled={cwd === share.path || !parentPath}>← Up</button>
         <div className="crumbs mono">
-          {cwd.split('/').filter(Boolean).map((p, i, arr) => (
-            <React.Fragment key={i}>
-              <span className="crumb-sep">/</span>
-              <button type="button" className="crumb" onClick={() => fetchFiles('/' + arr.slice(0, i + 1).join('/'))}>{p}</button>
-            </React.Fragment>
-          ))}
+          {cwd.split('/').filter(Boolean).map((p, i, arr) => {
+            const crumbPath = arr.slice(0, i + 1).join('/');
+            return (
+              <React.Fragment key={crumbPath}>
+                <span className="crumb-sep">/</span>
+                <button type="button" className="crumb" onClick={() => fetchFiles('/' + crumbPath)}>{p}</button>
+              </React.Fragment>
+            );
+          })}
         </div>
       </div>
       <div className="browse-list" style={{ maxHeight: '400px', overflowY: 'auto' }}>
@@ -400,6 +407,9 @@ function SystemUpdatesTab() {
   const [showLog, setShowLog] = useState(false);
   const [lastCheck, setLastCheck] = useState('—');
   const logEndRef = useRef(null);
+  const logContainerRef = useRef(null);
+  const mountedRef = useRef(true);
+  useEffect(() => () => { mountedRef.current = false; }, []);
 
   const fetchUpdates = async () => {
     try {
@@ -414,7 +424,11 @@ function SystemUpdatesTab() {
   };
 
   useEffect(() => { fetchUpdates(); }, []);
-  useEffect(() => { logEndRef.current?.scrollIntoView({ behavior: 'smooth' }); }, [log]);
+  useEffect(() => {
+    const c = logContainerRef.current;
+    const nearBottom = !c || (c.scrollHeight - c.scrollTop - c.clientHeight) < 80;
+    if (nearBottom) logEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+  }, [log]);
 
   const checkNow = async () => {
     setChecking(true);
@@ -467,31 +481,39 @@ function SystemUpdatesTab() {
       const reader = resp.body.getReader();
       const dec = new TextDecoder();
       let buf = '';
-      while (true) {
-        const { done, value } = await reader.read();
-        if (done) break;
-        buf += dec.decode(value, { stream: true });
-        const lines = buf.split('\n');
-        buf = lines.pop();
-        for (const line of lines) {
-          if (!line.startsWith('data: ')) continue;
-          try {
-            const obj = JSON.parse(line.slice(6));
-            if (obj.type === 'log') setLog(prev => [...prev, obj.text]);
-            if (obj.type === 'done') {
-              setRunning(false);
-              if (obj.code === 0) {
-                window.UI.toast({ kind: 'ok', title: 'Updates applied', body: `${names.length} package${names.length > 1 ? 's' : ''} updated${isKernel ? ' · Reboot recommended' : ''}`, ttl: 6000 });
-              } else {
-                window.UI.toast({ kind: 'err', title: 'Some packages failed', body: `apt exit code ${obj.code}` });
+      try {
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          buf += dec.decode(value, { stream: true });
+          const lines = buf.split('\n');
+          buf = lines.pop();
+          let parseFailed = false;
+          for (const line of lines) {
+            if (!line.startsWith('data: ')) continue;
+            try {
+              const obj = JSON.parse(line.slice(6));
+              if (obj.type === 'log' && mountedRef.current) setLog(prev => [...prev, obj.text]);
+              if (obj.type === 'done') {
+                if (mountedRef.current) setRunning(false);
+                if (obj.code === 0) {
+                  window.UI.toast({ kind: 'ok', title: 'Updates applied', body: `${names.length} package${names.length > 1 ? 's' : ''} updated${isKernel ? ' · Reboot recommended' : ''}`, ttl: 6000 });
+                } else {
+                  window.UI.toast({ kind: 'err', title: 'Some packages failed', body: `apt exit code ${obj.code}` });
+                }
+                fetchUpdates();
               }
-              fetchUpdates();
+            } catch {
+              parseFailed = true;
             }
-          } catch {}
+          }
+          if (parseFailed) break;
         }
+      } finally {
+        try { reader.releaseLock(); } catch {}
       }
     } catch (e) {
-      setRunning(false);
+      if (mountedRef.current) setRunning(false);
       window.UI.toast({ kind: 'err', title: 'Install failed', body: e.message });
     }
   };
@@ -534,7 +556,7 @@ function SystemUpdatesTab() {
             <span className="mono muted" style={{ fontSize: '11px' }}>apt output {running && '● live'}</span>
             <button className="btn-ghost" style={{ fontSize: '10px', padding: '2px 8px' }} onClick={() => setShowLog(false)}>hide</button>
           </div>
-          <pre style={{ fontFamily: 'monospace', fontSize: '11px', background: 'var(--bg-2)', border: '1px solid var(--line)', borderRadius: '8px', padding: '10px', maxHeight: '240px', overflow: 'auto', whiteSpace: 'pre-wrap', margin: 0 }}>
+          <pre ref={logContainerRef} style={{ fontFamily: 'monospace', fontSize: '11px', background: 'var(--bg-2)', border: '1px solid var(--line)', borderRadius: '8px', padding: '10px', maxHeight: '240px', overflow: 'auto', whiteSpace: 'pre-wrap', margin: 0 }}>
             {log.join('')}
             <span ref={logEndRef} />
           </pre>
@@ -609,7 +631,7 @@ function SSHKeysPanel() {
     });
     if (ok) {
       try {
-        await axios.delete(`/api/ssh/keys/${key.id}`);
+        await axios.delete(`/api/ssh/keys/${encodeURIComponent(key.id)}`);
         window.UI.toast({ kind: 'ok', title: 'Key removed', body: key.name });
         fetchKeys();
       } catch (e) {
@@ -742,8 +764,19 @@ function DeployKeyModal({ sshKey, onClose }) {
   const [running, setRunning] = useState(false);
 
   const submit = async () => {
+    const insecure = window.location.protocol !== 'https:' &&
+                     window.location.hostname !== 'localhost' &&
+                     window.location.hostname !== '127.0.0.1';
+    if (insecure) {
+      window.UI.toast({ kind: 'err', title: 'Insecure connection', body: 'Refusing to send credentials over plain HTTP. Use HTTPS.' });
+      return;
+    }
     if (!host) { window.UI.toast({ kind: 'err', title: 'Host required' }); return; }
     if (!password) { window.UI.toast({ kind: 'err', title: 'Password required' }); return; }
+    if (!(port >= 1 && port <= 65535)) {
+      window.UI.toast({ kind: 'err', title: 'Invalid port', body: 'Port must be between 1 and 65535.' });
+      return;
+    }
     setRunning(true);
     try {
       await axios.post('/api/ssh/keys/deploy', {
@@ -775,7 +808,10 @@ function DeployKeyModal({ sshKey, onClose }) {
     >
       <div className="form-cols">
         <FormField label="Remote host"><input value={host} onChange={(e) => setHost(e.target.value)} placeholder="prod.aymoon.dev" autoFocus className="mono" disabled={running} /></FormField>
-        <FormField label="Port"><input type="number" value={port} onChange={(e) => setPort(parseInt(e.target.value, 10))} className="mono" disabled={running} /></FormField>
+        <FormField label="Port"><input type="number" value={port} onChange={(e) => {
+          const n = Number.parseInt(e.target.value, 10);
+          setPort(Number.isFinite(n) ? n : 22);
+        }} className="mono" disabled={running} /></FormField>
         <FormField label="Remote user"><input value={user} onChange={(e) => setUser(e.target.value)} className="mono" disabled={running} /></FormField>
         <FormField label="Authentication" hint="One-time auth required to install the new key" span={2}>
           <div className="seg">
@@ -936,7 +972,7 @@ function DockerImagesTab() {
           </thead>
           <tbody>
             {images.map((img, i) => (
-              <tr key={i}>
+              <tr key={img.ID || i}>
                 <td>
                   {img.inUse
                     ? <span title="Used by a container" style={{ padding: '1px 6px', borderRadius: '3px', fontSize: '10px', background: 'oklch(0.25 0.06 145)', border: '1px solid oklch(0.45 0.12 145)', color: 'oklch(0.75 0.15 145)' }}>in use</span>

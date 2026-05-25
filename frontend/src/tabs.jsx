@@ -148,12 +148,12 @@ function Overview({ onNav }) {
 
   const toggleWidget = (index) => {
     const newLayout = [...layout];
-    newLayout[index].visible = !newLayout[index].visible;
+    newLayout[index] = { ...newLayout[index], visible: !newLayout[index].visible };
     saveLayout(newLayout);
   };
 
   const resetLayout = () => {
-    saveLayout(DEFAULT_LAYOUT);
+    saveLayout(DEFAULT_LAYOUT.map(w => ({ ...w })));
   };
 
   const [cpuHistory, setCpuHistory] = useState(() => Array.from({length: 24}, () => 10 + Math.floor(Math.random() * 20)));
@@ -161,10 +161,14 @@ function Overview({ onNav }) {
   const [rxHistory, setRxHistory] = useState(() => Array.from({length: 24}, () => 0));
   const [txHistory, setTxHistory] = useState(() => Array.from({length: 24}, () => 0));
 
+  const mountedRef = useRef(true);
+  useEffect(() => () => { mountedRef.current = false; }, []);
+
   useEffect(() => {
     const fetchStats = async () => {
       try {
         const res = await axios.get('/api/stats');
+        if (!mountedRef.current) return;
         setStats(res.data);
         setCpuHistory(prev => [...prev.slice(1), res.data.cpu]);
         setRamHistory(prev => [...prev.slice(1), res.data.ram]);
@@ -179,6 +183,7 @@ function Overview({ onNav }) {
           axios.get('/api/services'),
           axios.get('/api/samba/shares'),
         ]);
+        if (!mountedRef.current) return;
         setServices(servicesRes.data);
         setShares(sharesRes.data);
         const evts = [];
@@ -197,7 +202,7 @@ function Overview({ onNav }) {
       } catch (e) {}
     };
 
-    axios.get('/api/disk/smart').then(r => setSmart(r.data.disks || [])).catch(() => {});
+    axios.get('/api/disk/smart').then(r => { if (mountedRef.current) setSmart(r.data.disks || []); }).catch(() => {});
 
     fetchStats();
     fetchServices();
@@ -416,8 +421,8 @@ function Overview({ onNav }) {
                   <tr key={p.pid}>
                     <td>{p.pid}</td>
                     <td><b>{p.name}</b></td>
-                    <td><span style={{ color: p.cpu > 50 ? 'var(--err)' : p.cpu > 20 ? 'var(--warn)' : 'var(--text)' }}>{p.cpu.toFixed(1)}%</span></td>
-                    <td>{p.mem.toFixed(1)}%</td>
+                    <td><span style={{ color: p.cpu > 50 ? 'var(--err)' : p.cpu > 20 ? 'var(--warn)' : 'var(--text)' }}>{(p.cpu ?? 0).toFixed(1)}%</span></td>
+                    <td>{(p.mem ?? 0).toFixed(1)}%</td>
                   </tr>
                 ))}
               </tbody>
@@ -536,6 +541,10 @@ function ServicesTab({ kind, cardStyle }) {
     if (!name) return;
     const url = prompt('Service URL (e.g. http://localhost:8080):');
     if (!url) return;
+    if (!/^https?:\/\//.test(url.trim())) {
+      window.UI.toast({ kind: 'err', title: 'Invalid URL', body: 'Must start with http:// or https://' });
+      return;
+    }
     axios.post('/api/services/manual', { name, url })
       .then(() => {
         window.UI.toast({ kind: 'ok', title: 'Service added', body: name });
@@ -653,7 +662,7 @@ function ServicesTiles({ list, kind, onLogs, onRestart, onOpen }) {
       {list.map(s => (
         <div key={s.name} className={`svc-tile ${!s.isRunning ? 'is-stopped' : ''}`}>
           <div className="svc-tile-top">
-            {s.favicon ? <img src={s.favicon} alt="" className="favicon-img" style={{ width: '24px', height: '24px', borderRadius: '4px' }} onError={(e) => { e.target.style.display = 'none'; }} /> : <Favicon ch={s.displayName[0].toUpperCase()} tag={s.type} />}
+            {s.favicon ? <img src={s.favicon} alt="" className="favicon-img" style={{ width: '24px', height: '24px', borderRadius: '4px' }} onError={(e) => { e.target.style.display = 'none'; }} /> : <Favicon ch={(s.displayName || '?')[0].toUpperCase()} tag={s.type} />}
           </div>
           <div className="svc-tile-name" title={s.displayName}>{s.displayName}</div>
           <div className="svc-tile-meta mono">
@@ -691,7 +700,7 @@ function ServicesList({ list, kind, onLogs, onRestart, onStop, onOpen }) {
       </div>
       {list.map(s => (
         <div key={s.name} className={`svc-row ${!s.isRunning ? 'is-stopped' : ''}`}>
-          {s.favicon ? <img src={s.favicon} alt="" style={{ width: '18px', height: '18px', borderRadius: '3px' }} onError={(e) => { e.target.style.display = 'none'; }} /> : <Favicon ch={s.displayName[0].toUpperCase()} tag={s.type} />}
+          {s.favicon ? <img src={s.favicon} alt="" style={{ width: '18px', height: '18px', borderRadius: '3px' }} onError={(e) => { e.target.style.display = 'none'; }} /> : <Favicon ch={(s.displayName || '?')[0].toUpperCase()} tag={s.type} />}
           <div className="svc-row-name">
             <span>{s.displayName}</span>
             <span className="tag mono">{s.type}</span>
@@ -721,7 +730,7 @@ function ServicesPreview({ list, kind, onLogs, onOpen }) {
         <div key={s.name} className="svc-pcard">
           <div className="svc-pcard-thumb">
             <div className="pcard-stripes" />
-            <div className="pcard-glyph">{s.displayName[0].toUpperCase()}</div>
+            <div className="pcard-glyph">{(s.displayName || '?')[0].toUpperCase()}</div>
             <span className={`status-pill st-${s.isRunning ? 'running' : 'stopped'} pcard-status`}><StatusDot status={s.isRunning ? 'running' : 'stopped'} /> {s.isRunning ? 'running' : 'stopped'}</span>
           </div>
           <div className="svc-pcard-body">
@@ -860,8 +869,12 @@ function SambaTab() {
         <div className="samba-actions">
           <button className="btn-ghost" onClick={() => restartSvc('smbd')}>Restart</button>
           <button className="btn-ghost" onClick={async () => {
-            await axios.post('/api/samba/status', { action: 'reload' });
-            window.UI.toast({ kind: 'ok', title: 'Reloaded', body: 'smb.conf re-read.' });
+            try {
+              await axios.post('/api/samba/status', { action: 'reload' });
+              window.UI.toast({ kind: 'ok', title: 'Reloaded', body: 'smb.conf re-read.' });
+            } catch (e) {
+              window.UI.toast({ kind: 'err', title: 'Reload failed', body: e.response?.data?.error || e.message });
+            }
           }}>Reload</button>
           <button className="btn-ghost danger" onClick={() => stopSvc('smbd')}>Stop</button>
         </div>
@@ -1138,11 +1151,13 @@ function SambaUsers() {
 
 function SambaConnections() {
   const [conns, setConns] = useState([]);
+  const mountedRef = useRef(true);
+  useEffect(() => () => { mountedRef.current = false; }, []);
 
   const fetchConnections = async () => {
     try {
       const res = await axios.get('/api/samba/connections');
-      setConns(res.data || []);
+      if (mountedRef.current) setConns(res.data || []);
     } catch (e) {}
   };
 
@@ -1176,7 +1191,7 @@ function SambaConnections() {
         <thead><tr><th>Client</th><th>User</th><th>Share</th><th>PID</th><th>Connected At</th><th></th></tr></thead>
         <tbody>
           {conns.map((c, i) => (
-            <tr key={i}>
+            <tr key={c.pid ? `p-${c.pid}` : `c-${i}`}>
               <td><b>{c.machine || c.client}</b></td>
               <td>{c.username || c.user}</td>
               <td>//{c.service || c.share}</td>
@@ -1273,9 +1288,11 @@ function FileEditorModal({ file, onClose }) {
   const [saving, setSaving] = useState(false);
 
   useEffect(() => {
+    let cancelled = false;
     const load = async () => {
       try {
         const res = await axios.get('/api/files/view', { params: { path: file.path } });
+        if (cancelled) return;
         if (res.data && res.data.isText) {
           setIsText(true);
           setContent(res.data.content);
@@ -1283,13 +1300,15 @@ function FileEditorModal({ file, onClose }) {
           setIsText(false);
         }
       } catch (e) {
+        if (cancelled) return;
         window.UI.toast({ kind: 'err', title: 'Load failed', body: e.message });
         onClose();
       } finally {
-        setLoading(false);
+        if (!cancelled) setLoading(false);
       }
     };
     load();
+    return () => { cancelled = true; };
   }, [file.path, onClose]);
 
   const save = async () => {
@@ -1386,14 +1405,15 @@ const VIDEO_EXTS = new Set(['mp4','webm','ogg','mov','mkv']);
 const AUDIO_EXTS = new Set(['mp3','wav','ogg','m4a','flac','aac']);
 
 function renderMarkdown(raw) {
-  const esc = s => s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+  const esc = s => s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+  const safeHref = (h) => /^(https?:\/\/|mailto:|\/|\.\/|#)/i.test(String(h || '')) ? h : '#';
   const inline = s => s
     .replace(/`([^`]+)`/g, (_,c) => `<code class="md-ic">${c}</code>`)
     .replace(/\*\*\*(.+?)\*\*\*/g,'<strong><em>$1</em></strong>')
     .replace(/\*\*(.+?)\*\*/g,'<strong>$1</strong>')
     .replace(/\*(.+?)\*/g,'<em>$1</em>')
     .replace(/~~(.+?)~~/g,'<del>$1</del>')
-    .replace(/\[([^\]]+)\]\(([^)]+)\)/g,'<a href="$2" target="_blank" rel="noreferrer">$1</a>');
+    .replace(/\[([^\]]+)\]\(([^)]+)\)/g, (_, text, href) => `<a href="${esc(safeHref(href))}" target="_blank" rel="noreferrer">${text}</a>`);
   const lines = raw.split('\n');
   const out = [];
   let i = 0;
@@ -1710,9 +1730,9 @@ function BackupsManagerTab() {
   }, []);
 
   // Poll running jobs if any are active
+  const anyRunning = useMemo(() => jobs.some(j => j.lastStatus === 'running'), [jobs]);
   useEffect(() => {
-    const running = jobs.some(j => j.lastStatus === 'running');
-    if (!running) return;
+    if (!anyRunning) return;
 
     const interval = setInterval(async () => {
       try {
@@ -1721,7 +1741,7 @@ function BackupsManagerTab() {
       } catch (e) {}
     }, 3000);
     return () => clearInterval(interval);
-  }, [jobs]);
+  }, [anyRunning]);
 
   const handleDelete = async (job) => {
     const ok = await window.UI.confirm({
@@ -2109,6 +2129,7 @@ function FilesTab() {
   }, [folders, files]);
 
   const clickTimer = useRef(null);
+  useEffect(() => () => { if (clickTimer.current) clearTimeout(clickTimer.current); }, []);
   const handleRowClick = (item, isDir) => {
     if (clickTimer.current) {
       clearTimeout(clickTimer.current);
@@ -2669,11 +2690,13 @@ function DynamicFileNode({ name, path, activePath, onNavigate, depth }) {
 
   useEffect(() => {
     if (!open) return;
+    let cancelled = false;
     setLoading(true);
     axios.get('/api/samba/browse', { params: { path } })
-      .then(r => setSubdirs(r.data.folders || []))
+      .then(r => { if (!cancelled) setSubdirs(r.data.folders || []); })
       .catch(() => {})
-      .finally(() => setLoading(false));
+      .finally(() => { if (!cancelled) setLoading(false); });
+    return () => { cancelled = true; };
   }, [open, path]);
 
   return (
@@ -2881,7 +2904,9 @@ function SSHServers() {
   useEffect(() => {
     const stored = localStorage.getItem('dashboard_ssh_servers');
     if (stored) {
-      setServers(JSON.parse(stored));
+      let parsed = [];
+      try { parsed = JSON.parse(stored) || []; } catch (e) { parsed = []; }
+      setServers(parsed);
     } else {
       const mock = [
         { id: 's1', label: 'Local Server', host: '127.0.0.1', port: 22, username: 'root', authType: 'password', status: 'idle' },
@@ -3028,7 +3053,7 @@ function ProcessesTab() {
     const label = signal === 'SIGKILL' ? 'Force kill' : 'Terminate';
     const ok = await window.UI.confirm({
       title: `${label} PID ${p.pid}?`,
-      body: `Send ${signal} to "${p.cmd.slice(0, 60)}"`,
+      body: `Send ${signal} to "${(p.cmd || '').slice(0, 60)}"`,
       confirmLabel: label,
       dangerous: true,
     });
@@ -3062,7 +3087,7 @@ function ProcessesTab() {
   const filtered = useMemo(() => {
     if (!q) return procs;
     const lq = q.toLowerCase();
-    return procs.filter(p => p.cmd.toLowerCase().includes(lq) || String(p.pid).includes(q) || p.user.toLowerCase().includes(lq));
+    return procs.filter(p => (p.cmd || '').toLowerCase().includes(lq) || String(p.pid).includes(q) || (p.user || '').toLowerCase().includes(lq));
   }, [procs, q]);
 
   return (
@@ -3338,7 +3363,7 @@ function LogsTab() {
           </thead>
           <tbody>
             {filtered.map((e, i) => (
-              <tr key={i} style={{ borderBottom: '1px solid var(--line-2)' }}>
+              <tr key={e.cursor || (e.ts + '-' + i)} style={{ borderBottom: '1px solid var(--line-2)' }}>
                 <td style={{ padding: '3px 8px', color: 'var(--text-3)', whiteSpace: 'nowrap' }}>{fmtTime(e.ts)}</td>
                 <td style={{ padding: '3px 8px', color: LOG_PRI_COLOR[e.priority] ?? 'var(--text-3)', fontWeight: e.priority < 4 ? 'bold' : 'normal' }}>{LOG_PRI_LABEL[e.priority] ?? '?'}</td>
                 <td style={{ padding: '3px 8px', color: 'var(--text-3)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', maxWidth: '160px' }} title={e.unit}>{e.unit}</td>
@@ -3471,6 +3496,8 @@ function SpeedtestTab() {
   const [stage, setStage] = useState('idle'); // idle, init, download, upload, done, err
   const [stageProgress, setStageProgress] = useState(0); // 0 to 100
   const [errorMsg, setErrorMsg] = useState(null);
+  const timersRef = useRef([]);
+  useEffect(() => () => { timersRef.current.forEach(clearTimeout); timersRef.current = []; }, []);
 
   // Live traffic stats
   const [rxHist, setRxHist] = useState(() => Array.from({ length: 30 }, () => 0));
@@ -3509,6 +3536,7 @@ function SpeedtestTab() {
     const timer1 = setTimeout(() => { setStage('download'); setStageProgress(40); }, 3000);
     const timer2 = setTimeout(() => { setStage('upload'); setStageProgress(70); }, 10000);
     const timer3 = setTimeout(() => { setStage('finish'); setStageProgress(90); }, 17000);
+    timersRef.current.push(timer1, timer2, timer3);
 
     try {
       const res = await axios.post('/api/network/speedtest');
