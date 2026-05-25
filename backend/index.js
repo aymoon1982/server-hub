@@ -1814,6 +1814,218 @@ app.post('/api/docker/images/prune', async (req, res) => {
     }
 });
 
+// ─── Docker Compose Stacks ────────────────────────────────────────────────────
+const COMPOSE_SCAN_DIRS = (process.env.COMPOSE_SCAN_DIRS || '/opt/stacks:/srv/stacks:/etc/docker/compose')
+    .split(':').map(s => s.trim()).filter(Boolean).map(s => path.resolve(s));
+const COMPOSE_FILENAMES = ['compose.yaml', 'compose.yml', 'docker-compose.yaml', 'docker-compose.yml'];
+const RE_COMPOSE_PROJECT = /^[a-z0-9][a-z0-9_-]{0,62}$/i;
+
+function assertProject(name) {
+    if (typeof name !== 'string' || !RE_COMPOSE_PROJECT.test(name)) {
+        throw Object.assign(new Error('Invalid project name'), { status: 400 });
+    }
+}
+
+function findComposeFileForProject(project) {
+    for (const dir of COMPOSE_SCAN_DIRS) {
+        const stackDir = path.join(dir, project);
+        try {
+            if (!fs.statSync(stackDir).isDirectory()) continue;
+        } catch { continue; }
+        for (const fname of COMPOSE_FILENAMES) {
+            const file = path.join(stackDir, fname);
+            try {
+                if (!fs.statSync(file).isFile()) continue;
+            } catch { continue; }
+            const abs = path.resolve(file);
+            if (!COMPOSE_SCAN_DIRS.some(d => abs === d || abs.startsWith(d + path.sep))) continue;
+            return { dir: stackDir, file: abs };
+        }
+    }
+    return null;
+}
+
+function scanFilesystemForStacks() {
+    const stacks = [];
+    for (const root of COMPOSE_SCAN_DIRS) {
+        let entries;
+        try { entries = fs.readdirSync(root, { withFileTypes: true }); }
+        catch { continue; }
+        for (const entry of entries) {
+            if (!entry.isDirectory() || !RE_COMPOSE_PROJECT.test(entry.name)) continue;
+            const dir = path.join(root, entry.name);
+            for (const fname of COMPOSE_FILENAMES) {
+                const file = path.join(dir, fname);
+                try {
+                    if (fs.statSync(file).isFile()) {
+                        stacks.push({ name: entry.name, dir, file });
+                        break;
+                    }
+                } catch {}
+            }
+        }
+    }
+    return stacks;
+}
+
+const runComposeCmd = (args, timeoutMs = 30000) => new Promise((resolve) => {
+    execFile('docker', args, { timeout: timeoutMs, maxBuffer: 16 * 1024 * 1024 }, (error, stdout, stderr) => {
+        resolve({ ok: !error, stdout: stdout || '', stderr: stderr || (error ? error.message : '') });
+    });
+});
+
+app.get('/api/compose/stacks', async (req, res) => {
+    try {
+        const lsRes = await runComposeCmd(['compose', 'ls', '-a', '--format', 'json']);
+        const running = {};
+        if (lsRes.ok && lsRes.stdout.trim()) {
+            try {
+                const parsed = JSON.parse(lsRes.stdout);
+                if (Array.isArray(parsed)) {
+                    for (const s of parsed) {
+                        if (s.Name) running[s.Name] = s;
+                    }
+                }
+            } catch {}
+        }
+        const fsStacks = scanFilesystemForStacks();
+        const seen = new Set();
+        const stacks = [];
+        for (const s of fsStacks) {
+            seen.add(s.name);
+            const r = running[s.name];
+            stacks.push({
+                name: s.name,
+                dir: s.dir,
+                file: s.file,
+                status: r?.Status || 'down',
+                source: 'filesystem'
+            });
+        }
+        for (const name of Object.keys(running)) {
+            if (seen.has(name)) continue;
+            stacks.push({
+                name,
+                dir: null,
+                file: running[name].ConfigFiles || null,
+                status: running[name].Status || 'unknown',
+                source: 'docker'
+            });
+        }
+        stacks.sort((a, b) => a.name.localeCompare(b.name));
+        res.json({ stacks, scanDirs: COMPOSE_SCAN_DIRS });
+    } catch (e) {
+        res.status(500).json({ error: errMsg(e) });
+    }
+});
+
+app.get('/api/compose/stacks/:project', async (req, res) => {
+    try {
+        assertProject(req.params.project);
+        const project = req.params.project;
+        const found = findComposeFileForProject(project);
+        const psArgs = ['compose', '-p', project];
+        if (found) psArgs.push('-f', found.file);
+        psArgs.push('ps', '-a', '--format', 'json');
+        const psRes = await runComposeCmd(psArgs);
+        const services = [];
+        if (psRes.ok && psRes.stdout.trim()) {
+            for (const line of psRes.stdout.trim().split('\n')) {
+                try {
+                    const obj = JSON.parse(line);
+                    services.push({
+                        name: obj.Service || obj.Name,
+                        container: obj.Name,
+                        image: obj.Image,
+                        state: obj.State,
+                        status: obj.Status,
+                        ports: Array.isArray(obj.Publishers) ? obj.Publishers.filter(p => p.PublishedPort).map(p => `${p.PublishedPort}:${p.TargetPort}/${p.Protocol}`).join(', ') : ''
+                    });
+                } catch {}
+            }
+        }
+        res.json({
+            name: project,
+            dir: found?.dir || null,
+            file: found?.file || null,
+            services
+        });
+    } catch (e) {
+        res.status(e.status || 500).json({ error: errMsg(e) });
+    }
+});
+
+app.get('/api/compose/stacks/:project/file', async (req, res) => {
+    try {
+        assertProject(req.params.project);
+        const found = findComposeFileForProject(req.params.project);
+        if (!found) return res.status(404).json({ error: 'Compose file not found' });
+        const stat = fs.statSync(found.file);
+        if (stat.size > 1024 * 1024) return res.status(413).json({ error: 'Compose file too large' });
+        const content = fs.readFileSync(found.file, 'utf8');
+        res.json({ path: found.file, content });
+    } catch (e) {
+        res.status(e.status || 500).json({ error: errMsg(e) });
+    }
+});
+
+app.post('/api/compose/stacks/:project/file', async (req, res) => {
+    try {
+        assertProject(req.params.project);
+        const { content } = req.body || {};
+        if (typeof content !== 'string') return res.status(400).json({ error: 'Missing content' });
+        if (content.length > 1024 * 1024) return res.status(413).json({ error: 'Content too large' });
+        const found = findComposeFileForProject(req.params.project);
+        if (!found) return res.status(404).json({ error: 'Compose file not found' });
+        const tmp = found.file + '.tmp.' + process.pid;
+        fs.writeFileSync(tmp, content, { mode: 0o644 });
+        fs.renameSync(tmp, found.file);
+        res.json({ ok: true });
+    } catch (e) {
+        res.status(e.status || 500).json({ error: errMsg(e) });
+    }
+});
+
+app.get('/api/compose/stacks/:project/logs', async (req, res) => {
+    try {
+        assertProject(req.params.project);
+        const tail = Math.min(2000, Math.max(50, parseInt(req.query.tail, 10) || 200));
+        const found = findComposeFileForProject(req.params.project);
+        const args = ['compose', '-p', req.params.project];
+        if (found) args.push('-f', found.file);
+        args.push('logs', '--no-color', '--tail', String(tail));
+        const out = await runComposeCmd(args, 30000);
+        res.json({ logs: (out.stdout || '') + (out.stderr || '') });
+    } catch (e) {
+        res.status(e.status || 500).json({ error: errMsg(e) });
+    }
+});
+
+app.post('/api/compose/stacks/:project/action', async (req, res) => {
+    try {
+        assertProject(req.params.project);
+        const { action } = req.body || {};
+        const allowed = new Set(['up', 'down', 'restart', 'pull', 'stop', 'start']);
+        if (!allowed.has(action)) return res.status(400).json({ error: 'Invalid action' });
+        const found = findComposeFileForProject(req.params.project);
+        if (!found && action !== 'down' && action !== 'stop') {
+            return res.status(404).json({ error: 'Compose file not found' });
+        }
+        const args = ['compose', '-p', req.params.project];
+        if (found) args.push('-f', found.file);
+        args.push(action);
+        if (action === 'up') args.push('-d', '--remove-orphans');
+        if (action === 'down') args.push('--remove-orphans');
+        const out = await runComposeCmd(args, 10 * 60 * 1000);
+        if (!out.ok) {
+            return res.status(500).json({ error: (out.stderr || 'Command failed').slice(0, 4000) });
+        }
+        res.json({ ok: true, output: ((out.stdout || '') + (out.stderr || '')).slice(0, 8000) });
+    } catch (e) {
+        res.status(e.status || 500).json({ error: errMsg(e) });
+    }
+});
+
 // ─── Log Viewer ───────────────────────────────────────────────────────────────
 app.get('/api/logs/units', async (req, res) => {
     try {

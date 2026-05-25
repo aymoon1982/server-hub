@@ -16,7 +16,7 @@ import {
   SystemTab,
   KBD
 } from './tabs.jsx';
-import { PowerMenu, DockerImagesTab } from './features.jsx';
+import { PowerMenu, DockerImagesTab, StacksTab } from './features.jsx';
 
 const TABS = [
   { id: 'overview', label: 'Overview', glyph: '◇', section: 'system' },
@@ -24,6 +24,7 @@ const TABS = [
   { id: 'web',      label: 'Web UIs',  glyph: '▦', section: 'services' },
   { id: 'backend',  label: 'Backend',  glyph: '⇆', section: 'services' },
   { id: 'docker',   label: 'Images',   glyph: '◈', section: 'services' },
+  { id: 'stacks',   label: 'Stacks',   glyph: '◰', section: 'services' },
   { id: 'agents',   label: 'Agents',   glyph: '✦', section: 'services' },
   { id: 'samba',    label: 'Samba',    glyph: '◫', section: 'storage' },
   { id: 'files',    label: 'Files',    glyph: '▢', section: 'storage' },
@@ -177,6 +178,7 @@ function Shell() {
       case 'web':      return <ServicesTab kind="web" cardStyle={t.cardStyle} />;
       case 'backend':  return <ServicesTab kind="backend" cardStyle={t.cardStyle} />;
       case 'docker':   return <DockerImagesTab />;
+      case 'stacks':   return <StacksTab />;
       case 'agents':   return <AgentsTab />;
       case 'samba':    return <SambaTab />;
       case 'files':    return <FilesTab />;
