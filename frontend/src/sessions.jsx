@@ -1,0 +1,390 @@
+import React, { createContext, useContext, useState, useRef, useEffect, useCallback, useMemo } from 'react';
+import axios from 'axios';
+import { Terminal as XTermTerminal } from '@xterm/xterm';
+import { FitAddon } from '@xterm/addon-fit';
+import { WebLinksAddon } from '@xterm/addon-web-links';
+import '@xterm/xterm/css/xterm.css';
+
+const SessionsCtx = createContext(null);
+
+function SessionsProvider({ children }) {
+  const [sessions, setSessions] = useState([]); // {id, type, title, subtitle, started, status, data}
+  const [activeId, setActiveId] = useState(null);
+  const [fullscreen, setFullscreen] = useState(false);
+  const seq = useRef(0);
+
+  const launch = useCallback((opts) => {
+    const id = 's' + (++seq.current);
+    const session = {
+      id,
+      type: opts.type || 'shell', // shell | agent | ssh | logs | docker
+      title: opts.title || 'Shell',
+      subtitle: opts.subtitle || '',
+      glyph: opts.glyph || '›_',
+      data: opts.data || null,
+      status: 'connecting',
+      started: Date.now(),
+    };
+    setSessions(arr => [...arr, session]);
+    setActiveId(id);
+    setFullscreen(true);
+    return id;
+  }, []);
+
+  const close = useCallback((id) => {
+    setSessions(arr => {
+      const next = arr.filter(s => s.id !== id);
+      if (id === activeId) {
+        setActiveId(next.length ? next[next.length - 1].id : null);
+        if (!next.length) setFullscreen(false);
+      }
+      return next;
+    });
+  }, [activeId]);
+
+  const minimize = useCallback(() => setFullscreen(false), []);
+  const restore = useCallback((id) => {
+    if (id) setActiveId(id);
+    setFullscreen(true);
+  }, []);
+
+  useEffect(() => {
+    window.SESS = { launch, close, minimize, restore };
+  }, [launch, close, minimize, restore]);
+
+  // ⌘` toggles overlay if shells exist; otherwise opens a new one
+  useEffect(() => {
+    const onKey = (e) => {
+      if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA') return;
+      if (e.key === '`' && (e.ctrlKey || e.metaKey)) {
+        e.preventDefault();
+        if (sessions.length === 0) {
+          launch({ type: 'shell', title: 'shell · 1', glyph: '›_' });
+        } else if (fullscreen) {
+          minimize();
+        } else {
+          restore(activeId || sessions[sessions.length - 1].id);
+        }
+      }
+      if (e.key === 'Escape' && fullscreen) {
+        minimize();
+      }
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [sessions, activeId, fullscreen, launch, minimize, restore]);
+
+  return (
+    <SessionsCtx.Provider value={{ sessions, activeId, fullscreen, launch, close, minimize, restore, setActiveId, setSessions }}>
+      {children}
+      {sessions.length > 0 && <SessionOverlay />}
+      {!fullscreen && sessions.length > 0 && <SessionDock />}
+    </SessionsCtx.Provider>
+  );
+}
+
+function useSessions() {
+  return useContext(SessionsCtx);
+}
+
+function SessionOverlay() {
+  const { sessions, activeId, setActiveId, close, minimize, launch, fullscreen } = useSessions();
+  const active = sessions.find(s => s.id === activeId) || sessions[0];
+  const [hostname, setHostname] = useState('ayman-server');
+
+  useEffect(() => {
+    axios.get('/api/health')
+      .then(res => {
+        if (res.data?.host?.name) setHostname(res.data.host.name);
+      })
+      .catch(() => {});
+  }, []);
+
+  if (!active) return null;
+
+  return (
+    <div className={`sess-overlay ${!fullscreen ? 'is-minimized' : ''}`} role="dialog" aria-label="Session" style={!fullscreen ? { display: 'none' } : undefined}>
+      <header className="sess-head">
+        <div className="sess-tabs">
+          {sessions.map(s => (
+            <button
+              key={s.id}
+              className={`sess-tab sess-tab-${s.type} ${s.id === activeId ? 'is-active' : ''}`}
+              onClick={() => setActiveId(s.id)}
+              title={`${s.title} · ${s.subtitle}`}
+            >
+              <span className={`sess-status dot dot-${s.status === 'connected' ? 'ok' : s.status === 'connecting' ? 'warn' : 'mute'}`} />
+              <span className="sess-tab-glyph mono">{s.glyph}</span>
+              <span className="sess-tab-title">{s.title}</span>
+              {s.subtitle && <span className="sess-tab-sub mono">{s.subtitle}</span>}
+              <button
+                className="sess-tab-x"
+                onClick={(e) => { e.stopPropagation(); close(s.id); }}
+                aria-label="Close session"
+              >×</button>
+            </button>
+          ))}
+          <button className="sess-tab-add" onClick={() => launch({ type: 'shell', title: `shell · ${sessions.length + 1}`, glyph: '›_' })}>
+            <span>+</span><span className="mono">New shell</span>
+          </button>
+        </div>
+        <div className="sess-ctrls">
+          <span className="sess-host mono">{hostname}</span>
+          <button className="sess-ctrl-btn" title="Minimize" onClick={minimize}>—</button>
+          <button className="sess-ctrl-btn" title="Close all sessions" onClick={async () => {
+            const ok = await window.UI.confirm({
+              title: 'Close all sessions?',
+              body: `${sessions.length} session${sessions.length === 1 ? '' : 's'} will be disconnected.`,
+              confirmLabel: 'Close all',
+              dangerous: true,
+            });
+            if (ok) sessions.forEach(s => close(s.id));
+          }}>×</button>
+        </div>
+      </header>
+      <div className="sess-body">
+        {sessions.map(s => {
+          const isActive = s.id === activeId;
+          if (s.type === 'logs') {
+            return <RealLogsPane key={s.id} session={s} active={isActive} />;
+          }
+          return <RealTerminalPane key={s.id} session={s} active={isActive} />;
+        })}
+      </div>
+    </div>
+  );
+}
+
+function SessionDock() {
+  const { sessions, restore, close, activeId } = useSessions();
+  return (
+    <div className="sess-dock" role="toolbar" aria-label="Minimized sessions">
+      <div className="sess-dock-label mono">sessions</div>
+      {sessions.map(s => (
+        <button
+          key={s.id}
+          className={`sess-dock-pill sess-dock-${s.type} ${s.id === activeId ? 'is-active' : ''}`}
+          onClick={() => restore(s.id)}
+          title={`Restore ${s.title}`}
+        >
+          <span className={`dot dot-${s.status === 'connected' ? 'ok' : s.status === 'connecting' ? 'warn' : 'mute'}`} />
+          <span className="sess-dock-glyph mono">{s.glyph}</span>
+          <span className="sess-dock-title">{s.title}</span>
+          <span className="sess-dock-x" onClick={(e) => { e.stopPropagation(); close(s.id); }} aria-label="Close">×</span>
+        </button>
+      ))}
+    </div>
+  );
+}
+
+// ─── RealTerminalPane (xterm.js + WebSockets integration) ───────────────────
+function RealTerminalPane({ session, active }) {
+  const hostRef = useRef(null);
+  const termRef = useRef(null);
+  const fitRef = useRef(null);
+  const wsRef = useRef(null);
+  const { setSessions, fullscreen } = useSessions();
+
+  const updateStatus = useCallback((status) => {
+    setSessions(arr => arr.map(s => s.id === session.id ? { ...s, status } : s));
+  }, [session.id, setSessions]);
+
+  useEffect(() => {
+    if (!hostRef.current) return;
+
+    const term = new XTermTerminal({
+      fontSize: 13,
+      fontFamily: 'ui-monospace, SFMono-Regular, Menlo, Consolas, monospace',
+      cursorBlink: true,
+      theme: {
+        background: '#0a0a0a',
+        foreground: '#f5f5f5',
+        cursor: '#3b82f6',
+        selectionBackground: 'rgba(59,130,246,0.35)',
+      },
+      allowTransparency: false,
+    });
+
+    const fit = new FitAddon();
+    term.loadAddon(fit);
+    term.loadAddon(new WebLinksAddon());
+    term.open(hostRef.current);
+    try { fit.fit(); } catch (e) {}
+
+    termRef.current = term;
+    fitRef.current = fit;
+
+    term.writeln('\x1b[2m· connecting …\x1b[0m');
+    updateStatus('connecting');
+
+    const proto = window.location.protocol === 'https:' ? 'wss' : 'ws';
+    const params = new URLSearchParams();
+    if (session.type === 'agent' && session.data?.id) params.set('agent', session.data.id);
+    if (session.type === 'docker' && session.data?.container) params.set('docker', session.data.container);
+    if (session.type === 'ssh') params.set('ssh', 'true');
+    params.set('cols', String(term.cols));
+    params.set('rows', String(term.rows));
+
+    const ws = new WebSocket(`${proto}://${window.location.host}/ws/terminal?${params.toString()}`);
+    wsRef.current = ws;
+
+    let opened = false;
+    ws.onopen = () => {
+      opened = true;
+      updateStatus('connected');
+      if (session.type === 'ssh' && session.data) {
+        try {
+          ws.send(JSON.stringify({
+            type: 'init-ssh',
+            host: session.data.host,
+            port: session.data.port,
+            username: session.data.username || 'root',
+            password: session.data.password || '',
+            privateKey: session.data.privateKey || '',
+            passphrase: session.data.passphrase || '',
+            cols: term.cols,
+            rows: term.rows
+          }));
+        } catch {}
+      } else {
+        try { ws.send(JSON.stringify({ type: 'resize', cols: term.cols, rows: term.rows })); } catch {}
+      }
+    };
+
+    ws.onmessage = (e) => {
+      if (typeof e.data === 'string') {
+        term.write(e.data);
+      } else if (e.data instanceof Blob) {
+        e.data.text().then((t) => term.write(t));
+      }
+    };
+
+    ws.onclose = (event) => {
+      updateStatus('closed');
+      if (!opened && event.code !== 1000) {
+        term.writeln(`\r\n\x1b[31m✗ connection failed (code ${event.code})\x1b[0m`);
+      }
+    };
+
+    ws.onerror = () => {
+      updateStatus('error');
+    };
+
+    term.onData((d) => {
+      if (ws.readyState === WebSocket.OPEN) ws.send(d);
+    });
+
+    term.onResize(({ cols, rows }) => {
+      if (ws.readyState === WebSocket.OPEN) {
+        try { ws.send(JSON.stringify({ type: 'resize', cols, rows })); } catch {}
+      }
+    });
+
+    const onWinResize = () => {
+      try { fit.fit(); } catch (e) {}
+    };
+    window.addEventListener('resize', onWinResize);
+    setTimeout(onWinResize, 60);
+
+    return () => {
+      window.removeEventListener('resize', onWinResize);
+      try { ws.close(); } catch (e) {}
+      try { term.dispose(); } catch (e) {}
+    };
+  }, [session.id]);
+
+  useEffect(() => {
+    if (active && fullscreen && fitRef.current) {
+      const id = setTimeout(() => {
+        try { fitRef.current.fit(); } catch {}
+        try { termRef.current?.focus(); } catch {}
+      }, 60);
+      return () => clearTimeout(id);
+    }
+  }, [active, fullscreen]);
+
+  return (
+    <div className={`sh-pane mono`} style={{ display: active ? 'block' : 'none', height: '100%', width: '100%', padding: '8px', background: '#0a0a0a' }}>
+      <div ref={hostRef} className="terminal-body" style={{ height: '100%', width: '100%' }} />
+    </div>
+  );
+}
+
+// ─── RealLogsPane (Docker container logs tailing) ───────────────────────────
+function RealLogsPane({ session, active }) {
+  const container = session.data?.container || 'plex';
+  const [logLines, setLogLines] = useState([]);
+  const bodyRef = useRef(null);
+  const { setSessions } = useSessions();
+
+  useEffect(() => {
+    if (active) {
+      setSessions(arr => arr.map(s => s.id === session.id ? { ...s, status: 'connected' } : s));
+    }
+  }, [active, session.id, setSessions]);
+
+  useEffect(() => {
+    const fetchLogs = async () => {
+      try {
+        const res = await axios.get('/api/docker/logs', { params: { name: container } });
+        const text = res.data.logs || '';
+        const lines = text.split('\n').filter(Boolean);
+        setLogLines(lines);
+      } catch (e) {
+        setLogLines([`Failed to fetch logs: ${e.message}`]);
+      }
+    };
+
+    fetchLogs();
+    const interval = setInterval(fetchLogs, 2000);
+    return () => clearInterval(interval);
+  }, [container]);
+
+  useEffect(() => {
+    if (bodyRef.current) {
+      bodyRef.current.scrollTop = bodyRef.current.scrollHeight;
+    }
+  }, [logLines, active]);
+
+  if (!active) return null;
+
+  return (
+    <div className="logs-pane mono" style={{ height: '100%', display: 'flex', flexDirection: 'column', background: '#0a0a0a', color: '#f5f5f5' }}>
+      <div className="logs-head" style={{ padding: '8px 12px', borderBottom: '1px solid var(--border)', display: 'flex', justifyContent: 'space-between', fontSize: '11px', color: 'var(--text-3)' }}>
+        <span>Tailing logs · <b>{container}</b></span>
+        <span className="muted">last 200 lines · live</span>
+      </div>
+      <div className="logs-body" ref={bodyRef} style={{ flex: 1, padding: '12px', overflowY: 'auto', fontSize: '12px', lineHeight: '1.4', fontFamily: 'monospace' }}>
+        {logLines.map((line, i) => {
+          let lvl = 'INFO';
+          let msg = line;
+          let ts = '';
+
+          // Try standard log line parsing
+          const match = line.match(/^(\S+\s+\S+)\s+\[?(INFO|DEBUG|WARN|ERROR|ERR|FATAL)\]?\s+(.*)$/i) ||
+                        line.match(/^([\d-T:.Z]+)\s+(\S+)\s+(.*)$/);
+          if (match) {
+            ts = match[1];
+            lvl = match[2].toUpperCase();
+            msg = match[3];
+          }
+
+          return (
+            <div key={i} className="logs-line" style={{ display: 'flex', gap: '8px', marginBottom: '2px' }}>
+              {ts && <span className="logs-ts" style={{ color: 'var(--text-3)', flexShrink: 0 }}>{ts}</span>}
+              <span className={`logs-lvl logs-lvl-${lvl.toLowerCase()}`} style={{
+                color: lvl.includes('ERR') || lvl.includes('FATAL') ? '#ef4444' : lvl.includes('WARN') ? '#f59e0b' : '#10b981',
+                fontWeight: 'bold',
+                flexShrink: 0
+              }}>{lvl}</span>
+              <span className="logs-msg" style={{ whiteSpace: 'pre-wrap', wordBreak: 'break-all' }}>{msg}</span>
+            </div>
+          );
+        })}
+        {logLines.length === 0 && <div style={{ color: 'var(--text-3)' }}>No logs available.</div>}
+      </div>
+    </div>
+  );
+}
+
+export { SessionsProvider, useSessions };

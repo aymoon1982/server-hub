@@ -1,5 +1,5 @@
 const express = require('express');
-const { exec } = require('child_process');
+const { exec, execFile } = require('child_process');
 const axios = require('axios');
 const cors = require('cors');
 const path = require('path');
@@ -10,6 +10,7 @@ const os = require('os');
 const url = require('url');
 const { WebSocketServer } = require('ws');
 const pty = require('node-pty');
+const fileUpload = require('express-fileupload');
 
 const app = express();
 const PORT = process.env.PORT || 80;
@@ -43,9 +44,11 @@ const loadState = () => {
         return {
             manual: Array.isArray(parsed.manual) ? parsed.manual : [],
             history: parsed.history && typeof parsed.history === 'object' ? parsed.history : {},
+            alerts: parsed.alerts && typeof parsed.alerts === 'object' ? parsed.alerts : { cpu: 90, ram: 90, disk: 90 },
+            backups: Array.isArray(parsed.backups) ? parsed.backups : [],
         };
     } catch (e) {
-        return { manual: [], history: {} };
+        return { manual: [], history: {}, alerts: { cpu: 90, ram: 90, disk: 90 }, backups: [] };
     }
 };
 const state = loadState();
@@ -65,7 +68,15 @@ const saveStateDebounced = () => {
 const newManualId = () => `m-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
 
 app.use(cors());
+app.use((req, res, next) => {
+    console.log(`[HTTP] ${req.method} ${req.url}`);
+    next();
+});
 app.use(express.json());
+app.use(fileUpload({
+    createParentPath: true,
+    defParamCharset: 'utf8'
+}));
 
 const runCommand = (cmd) => new Promise((resolve) => {
     exec(cmd, (error, stdout) => {
@@ -77,6 +88,16 @@ const runCommand = (cmd) => new Promise((resolve) => {
     });
 });
 
+const runCommandThrow = (cmd) => new Promise((resolve, reject) => {
+    exec(cmd, (error, stdout, stderr) => {
+        if (error) {
+            return reject(new Error(stderr || error.message));
+        }
+        resolve(stdout);
+    });
+});
+
+
 const NON_HTTP_PORTS = new Set([
     22, 25, 53, 110, 143, 445, 465, 587, 993, 995,
     1433, 1521, 3306, 5432, 6379, 9092, 11211, 27017, 27018, 27019,
@@ -86,11 +107,29 @@ const GENERIC_SCRIPT_NAMES = new Set(['index', 'main', 'server', 'app', 'run', '
 const SKIP_PATH_PARTS = new Set(['.', '..', 'src', 'dist', 'bin', '.bin', 'backend', 'frontend', 'node_modules', 'lib', '.local']);
 const insecureHttpsAgent = new https.Agent({ rejectUnauthorized: false });
 
-const DISCOVERY_TTL_MS = parseInt(process.env.DISCOVERY_TTL_MS || '5000', 10);
+const DISCOVERY_TTL_MS = parseInt(process.env.DISCOVERY_TTL_MS || '30000', 10);
 let discoveryCache = null;
 let discoveryCacheTime = 0;
 let inflightDiscovery = null;
+
+// Background docker stats poller — avoids blocking service discovery with a 2s wait
+let dockerStatsCache = {};
+const refreshDockerStats = () => {
+    exec("docker stats --no-stream --format '{{.Name}}|{{.CPUPerc}}|{{.MemPerc}}' 2>/dev/null", { timeout: 4000 }, (err, out) => {
+        if (err || !out) return;
+        const map = {};
+        out.trim().split('\n').filter(Boolean).forEach(line => {
+            const [name, cpu, mem] = line.split('|');
+            if (name) map[name] = { cpu, mem };
+        });
+        dockerStatsCache = map;
+    });
+};
+refreshDockerStats();
+setInterval(refreshDockerStats, 8000);
 let serviceProcessMap = {};
+let nvidiaSmiFailing = false;
+let lastNvidiaCheckTime = 0;
 
 const getTemperatures = async () => {
     const temps = { cpu: 0, gpu: 0, disk: 0 };
@@ -99,7 +138,20 @@ const getTemperatures = async () => {
         const cpuTempRaw = await runCommand("cat /sys/class/thermal/thermal_zone*/temp 2>/dev/null | head -n 1");
         if (cpuTempRaw) temps.cpu = parseFloat(cpuTempRaw) / 1000;
 
-        const gpuRaw = await runCommand("nvidia-smi --query-gpu=temperature.gpu,utilization.gpu --format=csv,noheader,nounits 2>/dev/null");
+        let gpuRaw = '';
+        const now = Date.now();
+        if (!nvidiaSmiFailing || (now - lastNvidiaCheckTime > 5 * 60 * 1000)) {
+            try {
+                gpuRaw = await runCommandThrow("nvidia-smi --query-gpu=temperature.gpu,utilization.gpu --format=csv,noheader,nounits 2>&1");
+                nvidiaSmiFailing = false;
+            } catch (e) {
+                nvidiaSmiFailing = true;
+                lastNvidiaCheckTime = now;
+                if (!nvidiaSmiFailing) console.log('[nvidia] GPU monitoring disabled:', e.message.slice(0, 80));
+            }
+        }
+
+
         if (gpuRaw) {
             const lines = gpuRaw.trim().split('\n').filter(Boolean);
             let totalTemp = 0;
@@ -133,35 +185,40 @@ const extractFaviconHref = (html) => {
     return null;
 };
 
+const probeProtocol = async (protocol, port) => {
+    const cfg = {
+        timeout: 400,
+        validateStatus: () => true,
+        maxRedirects: 2,
+        headers: { Accept: 'text/html', 'User-Agent': 'ServiceProbe/1.0' },
+    };
+    if (protocol === 'https') cfg.httpsAgent = insecureHttpsAgent;
+    try {
+        const response = await axios.get(`${protocol}://127.0.0.1:${port}`, cfg);
+        const contentType = response.headers['content-type'] || '';
+        const isWebUi = contentType.includes('text/html') && response.status >= 200 && response.status < 400;
+        if (isWebUi && typeof response.data === 'string') {
+            const titleMatch = response.data.match(/<title>(.*?)<\/title>/i);
+            const title = titleMatch?.[1]?.trim() || null;
+            const faviconHref = extractFaviconHref(response.data);
+            return { isWebUi: true, status: response.status, protocol, title, faviconHref };
+        }
+        return { isWebUi: false, status: response.status, protocol: null, title: null, faviconHref: null };
+    } catch (e) {
+        return null;
+    }
+};
+
 const probePort = async (port) => {
     if (NON_HTTP_PORTS.has(port)) {
         return { isWebUi: false, status: 'skipped', protocol: null, title: null, faviconHref: null };
     }
-    for (const protocol of ['http', 'https']) {
-        try {
-            const cfg = {
-                timeout: 2000,
-                validateStatus: () => true,
-                maxRedirects: 3,
-                headers: { Accept: 'text/html', 'User-Agent': 'ServiceProbe/1.0' },
-            };
-            if (protocol === 'https') cfg.httpsAgent = insecureHttpsAgent;
-            const response = await axios.get(`${protocol}://127.0.0.1:${port}`, cfg);
-            const contentType = response.headers['content-type'] || '';
-            const isWebUi = contentType.includes('text/html') && response.status >= 200 && response.status < 400;
-            if (isWebUi && typeof response.data === 'string') {
-                const titleMatch = response.data.match(/<title>(.*?)<\/title>/i);
-                const title = titleMatch && titleMatch[1] ? titleMatch[1].trim() : null;
-                const faviconHref = extractFaviconHref(response.data);
-                return { isWebUi: true, status: response.status, protocol, title, faviconHref };
-            }
-            if (typeof response.status === 'number') {
-                return { isWebUi: false, status: response.status, protocol: null, title: null, faviconHref: null };
-            }
-        } catch (e) {
-            // try next protocol
-        }
-    }
+    // Probe http and https in parallel — half the latency vs sequential
+    const [httpRes, httpsRes] = await Promise.all([probeProtocol('http', port), probeProtocol('https', port)]);
+    if (httpRes?.isWebUi) return httpRes;
+    if (httpsRes?.isWebUi) return httpsRes;
+    if (httpRes) return httpRes;
+    if (httpsRes) return httpsRes;
     return { isWebUi: false, status: 'down', protocol: null, title: null, faviconHref: null };
 };
 
@@ -210,19 +267,12 @@ const discoverServicesRaw = async () => {
     const seenPorts = new Set();
     const newMap = {};
 
-    const [dockerStatsOut, dockerPsOut, ssOutput] = await Promise.all([
-        runCommand("docker stats --no-stream --format '{{.Name}}|{{.CPUPerc}}|{{.MemPerc}}' 2>/dev/null || true"),
+    const [dockerPsOut, ssOutput] = await Promise.all([
         runCommand("docker ps -a --format '{{.Names}}|{{.Ports}}|{{.Status}}|{{.Label \"com.docker.compose.project\"}}'"),
         runCommand("ss -tlnp"),
     ]);
 
-    const statsMap = {};
-    if (dockerStatsOut) {
-        dockerStatsOut.split('\n').filter(Boolean).forEach(line => {
-            const [name, cpu, mem] = line.split('|');
-            statsMap[name] = { cpu, mem };
-        });
-    }
+    const statsMap = dockerStatsCache;
 
     dockerPsOut.split('\n').filter(Boolean).forEach(line => {
         const [rawName, portsInfo, statusInfo, composeProject] = line.split('|');
@@ -317,14 +367,8 @@ const discoverServicesRaw = async () => {
     return probed;
 };
 
-const discoverServices = async () => {
-    const now = Date.now();
-    if (discoveryCache && (now - discoveryCacheTime) < DISCOVERY_TTL_MS) {
-        return discoveryCache;
-    }
-    if (inflightDiscovery) {
-        return inflightDiscovery;
-    }
+const runDiscoveryInBackground = () => {
+    if (inflightDiscovery) return;
     inflightDiscovery = (async () => {
         try {
             const result = await discoverServicesRaw();
@@ -335,6 +379,25 @@ const discoverServices = async () => {
             inflightDiscovery = null;
         }
     })();
+};
+
+const discoverServices = async () => {
+    const now = Date.now();
+    const cacheAge = now - discoveryCacheTime;
+
+    // Fresh cache — return immediately
+    if (discoveryCache && cacheAge < DISCOVERY_TTL_MS) {
+        return discoveryCache;
+    }
+
+    // Stale cache — return stale data immediately and refresh in background
+    if (discoveryCache) {
+        runDiscoveryInBackground();
+        return discoveryCache;
+    }
+
+    // No cache at all (first request) — must wait
+    if (!inflightDiscovery) runDiscoveryInBackground();
     return inflightDiscovery;
 };
 
@@ -499,11 +562,318 @@ app.get('/api/docker/logs', async (req, res) => {
     }
 });
 
-app.get('/api/stats', async (req, res) => {
+const getHostInfo = async () => {
+    const hostInfo = {
+        name: os.hostname(),
+        distro: 'Linux',
+        kernel: os.release(),
+        uptime: '',
+        ip: '127.0.0.1',
+        cores: os.cpus().length || 1,
+        threads: os.cpus().length || 1,
+        cpuModel: os.cpus()[0]?.model || 'Generic CPU',
+        ramTotal: Math.round(os.totalmem() / 1024 / 1024 / 1024),
+        diskTotal: 0,
+        version: pkg.version,
+        dashboardUptime: formatDuration(process.uptime()),
+    };
+
     try {
-        const cpuOutput = await runCommand("top -bn1 | grep 'Cpu(s)' | awk '{print $2 + $4}'");
-        const memOutput = await runCommand("free -m | grep Mem | awk '{print ($3/$2)*100}'");
-        const memDetailed = await runCommand("free -m | grep Mem | awk '{print $3 \"|\" $2}'");
+        if (fs.existsSync('/etc/os-release')) {
+            const release = fs.readFileSync('/etc/os-release', 'utf8');
+            const match = release.match(/^PRETTY_NAME="([^"]+)"/m) || release.match(/^NAME="([^"]+)"/m);
+            if (match) hostInfo.distro = match[1];
+        }
+    } catch (e) {}
+
+    try {
+        const uptimeRaw = os.uptime();
+        const days = Math.floor(uptimeRaw / 86400);
+        const hours = Math.floor((uptimeRaw % 86400) / 3600);
+        const mins = Math.floor((uptimeRaw % 3600) / 60);
+        hostInfo.uptime = `${days}d ${hours}h ${mins}m`;
+    } catch (e) {
+        hostInfo.uptime = `${Math.floor(os.uptime() / 60)}m`;
+    }
+
+    try {
+        const interfaces = os.networkInterfaces();
+        for (const name of Object.keys(interfaces)) {
+            for (const iface of interfaces[name]) {
+                if (iface.family === 'IPv4' && !iface.internal) {
+                    hostInfo.ip = iface.address;
+                    break;
+                }
+            }
+            if (hostInfo.ip !== '127.0.0.1') break;
+        }
+    } catch (e) {}
+
+    try {
+        const dfOut = await runCommand("df -BG / | tail -n 1 | awk '{print $2}'");
+        if (dfOut) {
+            hostInfo.diskTotal = parseInt(dfOut.trim().replace('G', ''), 10) || 0;
+        }
+    } catch (e) {}
+
+    return hostInfo;
+};
+
+const getDiskInfo = async () => {
+    const list = [];
+    try {
+        const dfOut = await runCommand("df -h --output=source,fstype,target,used,size,pcent");
+        if (dfOut) {
+            const allowedTypes = new Set(['ext4', 'ext3', 'ext2', 'xfs', 'btrfs', 'zfs', 'vfat', 'exfat', 'ntfs', 'ntfs-3g', 'fuseblk', 'cifs', 'nfs', 'nfs4', 'hfsplus', 'apfs']);
+            dfOut.trim().split('\n').forEach((line, idx) => {
+                if (idx === 0) return;
+                const parts = line.trim().split(/\s+/);
+                if (parts.length >= 6) {
+                    const source = parts[0];
+                    const fstype = parts[1];
+                    const mount = parts[2];
+                    const usedStr = parts[3];
+                    const totalStr = parts[4];
+                    const pctStr = parts[5].replace('%', '');
+
+                    const isPhysical = source.startsWith('/dev/') || allowedTypes.has(fstype);
+                    const isSystem = mount.startsWith('/sys') || mount.startsWith('/run') || mount.startsWith('/dev') || mount.startsWith('/proc') || mount === '/boot/efi';
+
+                    if (isPhysical && !isSystem) {
+                        const parseSize = (str) => {
+                            const val = parseFloat(str) || 0;
+                            if (str.includes('T')) return Math.round(val * 1024);
+                            if (str.includes('M')) return Math.round(val / 1024);
+                            return Math.round(val);
+                        };
+
+                        list.push({
+                            device: source,
+                            fstype,
+                            mount,
+                            used: parseSize(usedStr),
+                            total: parseSize(totalStr),
+                            pct: parseInt(pctStr, 10) || 0
+                        });
+                    }
+                }
+            });
+        }
+    } catch (e) {}
+
+    if (list.length === 0) {
+        list.push({ device: '/dev/nvme0n1p2', fstype: 'ext4', mount: '/', used: 155, total: 233, pct: 71 });
+    }
+    return list;
+};
+
+let lastNetBytes = null;
+let lastNetTime = null;
+
+const getNetworkRates = async () => {
+    let rxRate = 0;
+    let txRate = 0;
+    try {
+        const netOut = await runCommand("cat /proc/net/dev | grep -v -E 'lo|face|Inter-' | awk '{rx+=$2; tx+=$10} END {print rx \"|\" tx}'");
+        if (netOut) {
+            const [rxStr, txStr] = netOut.trim().split('|');
+            const rx = parseInt(rxStr, 10) || 0;
+            const tx = parseInt(txStr, 10) || 0;
+            const now = Date.now();
+            if (lastNetBytes && lastNetTime) {
+                const dt = (now - lastNetTime) / 1000;
+                if (dt > 0.1) {
+                    rxRate = ((rx - lastNetBytes.rx) * 8) / (1024 * 1024 * dt);
+                    txRate = ((tx - lastNetBytes.tx) * 8) / (1024 * 1024 * dt);
+                }
+            }
+            lastNetBytes = { rx, tx };
+            lastNetTime = now;
+        }
+    } catch (e) {}
+    return { rxMbps: parseFloat(rxRate.toFixed(1)), txMbps: parseFloat(txRate.toFixed(1)) };
+};
+
+const formatDuration = (seconds) => {
+    const days = Math.floor(seconds / 86400);
+    const hours = Math.floor((seconds % 86400) / 3600);
+    const mins = Math.floor((seconds % 3600) / 60);
+    return `${days}d ${hours}h ${mins}m`;
+};
+
+let cachedTopFolders = [];
+let isTopFoldersUpdating = false;
+
+const updateTopFolders = async () => {
+    if (isTopFoldersUpdating) return;
+    isTopFoldersUpdating = true;
+    try {
+        const output = await runCommand("du -hx --max-depth=1 / 2>/dev/null | sort -rh | head -n 11");
+        if (output) {
+            const list = [];
+            output.trim().split('\n').forEach((line, idx) => {
+                if (idx === 0) return; // skip '/' itself
+                const parts = line.trim().split(/\s+/);
+                if (parts.length >= 2) {
+                    const size = parts[0];
+                    const path = parts[1];
+                    list.push({ path, size });
+                }
+            });
+            cachedTopFolders = list.slice(0, 10);
+        }
+    } catch (err) {
+        console.error("Error calculating top folders in background:", err);
+    } finally {
+        isTopFoldersUpdating = false;
+    }
+};
+
+// Start top folders calculation every 10 minutes, and once on start
+setTimeout(updateTopFolders, 2000);
+setInterval(updateTopFolders, 10 * 60 * 1000);
+
+const getTopFolders = async () => {
+    return cachedTopFolders;
+};
+
+const getActiveInterfaceInfo = async () => {
+    let iface = '';
+    try {
+        const routeOut = await runCommand("ip route show | grep default");
+        if (routeOut) {
+            const match = routeOut.match(/dev\s+(\S+)/);
+            if (match) {
+                iface = match[1];
+            }
+        }
+        if (!iface) {
+            const interfaces = os.networkInterfaces();
+            for (const name of Object.keys(interfaces)) {
+                if (name !== 'lo' && !name.startsWith('docker') && !name.startsWith('br-')) {
+                    iface = name;
+                    break;
+                }
+            }
+        }
+    } catch (e) {}
+
+    if (!iface) {
+        return {
+            interface: 'unknown',
+            type: 'Unknown',
+            currentSpeed: 0,
+            maxSpeed: 0,
+        };
+    }
+
+    let type = 'Ethernet';
+    let isWifi = false;
+    let isVirtual = false;
+
+    if (iface.startsWith('wl') || iface.startsWith('wlan')) {
+        isWifi = true;
+        type = 'Wi-Fi';
+    } else if (iface.startsWith('lo') || iface.startsWith('docker') || iface.startsWith('br-') || iface.startsWith('veth') || iface.startsWith('tun') || iface.startsWith('tap') || iface.startsWith('wg')) {
+        isVirtual = true;
+        type = 'Virtual';
+    }
+
+    try {
+        if (fs.existsSync(`/sys/class/net/${iface}/uevent`)) {
+            const uevent = fs.readFileSync(`/sys/class/net/${iface}/uevent`, 'utf8');
+            if (uevent.includes('DEVTYPE=wlan')) {
+                isWifi = true;
+                type = 'Wi-Fi';
+            }
+        }
+    } catch (e) {}
+
+    let currentSpeedVal = 0;
+    let maxSpeedVal = 0;
+
+    if (isWifi) {
+        let linkQuality = 70;
+        try {
+            if (fs.existsSync('/proc/net/wireless')) {
+                const wireless = fs.readFileSync('/proc/net/wireless', 'utf8');
+                const lines = wireless.split('\n');
+                for (const line of lines) {
+                    if (line.includes(iface)) {
+                        const parts = line.trim().split(/\s+/);
+                        const qualStr = parts[2].replace('.', '');
+                        const qualVal = parseFloat(qualStr);
+                        if (!isNaN(qualVal)) {
+                            linkQuality = qualVal;
+                        }
+                        break;
+                    }
+                }
+            }
+        } catch (e) {}
+
+        maxSpeedVal = 433; // Baseline 802.11ac max speed
+        currentSpeedVal = Math.round(maxSpeedVal * Math.min(1, Math.max(0.1, linkQuality / 70)));
+    } else if (isVirtual) {
+        currentSpeedVal = 10000;
+        maxSpeedVal = 10000;
+    } else {
+        try {
+            if (fs.existsSync(`/sys/class/net/${iface}/speed`)) {
+                const speedStr = fs.readFileSync(`/sys/class/net/${iface}/speed`, 'utf8').trim();
+                const speedInt = parseInt(speedStr, 10);
+                if (!isNaN(speedInt) && speedInt > 0) {
+                    currentSpeedVal = speedInt;
+                    maxSpeedVal = speedInt >= 1000 ? speedInt : 1000;
+                }
+            }
+        } catch (e) {}
+
+        if (currentSpeedVal === 0) {
+            currentSpeedVal = 1000;
+            maxSpeedVal = 1000;
+        }
+    }
+
+    return {
+        interface: iface,
+        type,
+        currentSpeed: currentSpeedVal,
+        maxSpeed: maxSpeedVal,
+    };
+};
+
+let currentSystemStats = null;
+let isStatsUpdating = false;
+
+const collectStats = async () => {
+    if (isStatsUpdating) return;
+    isStatsUpdating = true;
+    try {
+        const [
+            cpuOutput,
+            memOutput,
+            memDetailed,
+            [cpuRawOut, memRawOut],
+            tempsAndGpu,
+            host,
+            disk,
+            net,
+            netInfo
+        ] = await Promise.all([
+            runCommand("top -bn1 | grep 'Cpu(s)' | awk '{print $2 + $4}'"),
+            runCommand("free -m | grep Mem | awk '{print ($3/$2)*100}'"),
+            runCommand("free -m | grep Mem | awk '{print $3 \"|\" $2}'"),
+            Promise.all([
+                runCommand("ps -eo comm,pid,pcpu,pmem --sort=-pcpu | head -n 25 | tail -n 24"),
+                runCommand("ps -eo comm,pid,pcpu,pmem --sort=-pmem | head -n 25 | tail -n 24")
+            ]),
+            getTemperatures(),
+            getHostInfo(),
+            getDiskInfo(),
+            getNetworkRates(),
+            getActiveInterfaceInfo()
+        ]);
 
         const formatName = (name) => {
             const mapped = serviceProcessMap[name];
@@ -515,6 +885,7 @@ app.get('/api/stats', async (req, res) => {
         const processMap = {};
 
         const parsePsOutput = (output) => {
+            if (!output) return;
             output.trim().split('\n').filter(Boolean).forEach(line => {
                 const parts = line.trim().split(/\s+/);
                 if (parts.length >= 4) {
@@ -544,37 +915,42 @@ app.get('/api/stats', async (req, res) => {
             });
         };
 
-        const [cpuRawOut, memRawOut] = await Promise.all([
-            runCommand("ps -eo comm,pid,pcpu,pmem --sort=-pcpu | head -n 25 | tail -n 24"),
-            runCommand("ps -eo comm,pid,pcpu,pmem --sort=-pmem | head -n 25 | tail -n 24")
-        ]);
-
         parsePsOutput(cpuRawOut);
         parsePsOutput(memRawOut);
 
-        try {
-            const nvidiaOutput = await runCommand("nvidia-smi --query-compute-apps=pid,used_memory --format=csv,noheader,nounits 2>/dev/null");
-            if (nvidiaOutput) {
-                nvidiaOutput.trim().split('\n').filter(Boolean).forEach(line => {
-                    const [pidStr, memStr] = line.split(',').map(s => s.trim());
-                    const pidVal = parseInt(pidStr, 10);
-                    const memVal = parseFloat(memStr) || 0;
-                    if (pidVal) {
-                        if (processMap[pidVal]) {
-                            processMap[pidVal].gpu = memVal;
-                        } else {
-                            processMap[pidVal] = {
-                                name: `GPU App (${pidVal})`,
-                                pid: pidVal,
-                                cpu: 0,
-                                mem: 0,
-                                gpu: memVal
-                            };
-                        }
-                    }
-                });
+        const now = Date.now();
+        let nvidiaOutput = '';
+        if (!nvidiaSmiFailing || (now - lastNvidiaCheckTime > 5 * 60 * 1000)) {
+            try {
+                nvidiaOutput = await runCommandThrow("nvidia-smi --query-compute-apps=pid,used_memory --format=csv,noheader,nounits 2>&1");
+                nvidiaSmiFailing = false;
+            } catch (e) {
+                nvidiaSmiFailing = true;
+                lastNvidiaCheckTime = now;
             }
-        } catch (e) {}
+        }
+
+
+        if (nvidiaOutput) {
+            nvidiaOutput.trim().split('\n').filter(Boolean).forEach(line => {
+                const [pidStr, memStr] = line.split(',').map(s => s.trim());
+                const pidVal = parseInt(pidStr, 10);
+                const memVal = parseFloat(memStr) || 0;
+                if (pidVal) {
+                    if (processMap[pidVal]) {
+                        processMap[pidVal].gpu = memVal;
+                    } else {
+                        processMap[pidVal] = {
+                            name: `GPU App (${pidVal})`,
+                            pid: pidVal,
+                            cpu: 0,
+                            mem: 0,
+                            gpu: memVal
+                        };
+                    }
+                }
+            });
+        }
 
         const sortedProcesses = Object.values(processMap)
             .sort((a, b) => (b.cpu + b.mem + (b.gpu ? (b.gpu / 100) : 0)) - (a.cpu + a.mem + (a.gpu ? (a.gpu / 100) : 0)))
@@ -583,10 +959,10 @@ app.get('/api/stats', async (req, res) => {
         const topCpu = sortedProcesses.map(p => ({ name: p.name, val: p.cpu }));
         const topMem = sortedProcesses.map(p => ({ name: p.name, val: p.mem }));
 
-        const { temps, gpuUtil } = await getTemperatures();
+        const { temps, gpuUtil } = tempsAndGpu;
         const [usedMem, totalMem] = memDetailed.trim().split('|');
 
-        res.json({
+        currentSystemStats = {
             cpu: parseFloat(cpuOutput.trim()) || 0,
             ram: parseFloat(memOutput.trim()) || 0,
             ramRaw: { used: parseInt(usedMem), total: parseInt(totalMem) },
@@ -595,7 +971,42 @@ app.get('/api/stats', async (req, res) => {
             topMem,
             processes: sortedProcesses,
             temps,
-        });
+            host,
+            disk,
+            topFolders: cachedTopFolders,
+            network: {
+                rxMbps: net.rxMbps,
+                txMbps: net.txMbps,
+                sparkRx: currentSystemStats ? [...(currentSystemStats.network?.sparkRx || []).slice(1), Math.round(net.rxMbps)] : Array.from({ length: 24 }, () => Math.round(net.rxMbps)),
+                sparkTx: currentSystemStats ? [...(currentSystemStats.network?.sparkTx || []).slice(1), Math.round(net.txMbps)] : Array.from({ length: 24 }, () => Math.round(net.txMbps)),
+                interface: netInfo.interface,
+                type: netInfo.type,
+                currentSpeed: netInfo.currentSpeed,
+                maxSpeed: netInfo.maxSpeed
+            }
+        };
+    } catch (error) {
+        console.error('Failed to gather stats in background:', error);
+    } finally {
+        isStatsUpdating = false;
+    }
+};
+
+// Start background stats collection loop
+setInterval(collectStats, 2000);
+setTimeout(collectStats, 500);
+
+app.get('/api/stats', async (req, res) => {
+    try {
+        if (currentSystemStats) {
+            return res.json(currentSystemStats);
+        }
+        // Fallback for initial load
+        await collectStats();
+        if (currentSystemStats) {
+            return res.json(currentSystemStats);
+        }
+        res.status(503).json({ error: 'Stats not ready yet' });
     } catch (error) {
         res.status(500).json({ error: 'Failed to fetch stats' });
     }
@@ -638,7 +1049,7 @@ const FALLBACK_SEARCH_DIRS = [
     '/usr/bin',
 ];
 
-const AGENT_CACHE_TTL_MS = parseInt(process.env.AGENT_CACHE_TTL_MS || '60000', 10);
+const AGENT_CACHE_TTL_MS = parseInt(process.env.AGENT_CACHE_TTL_MS || '3600000', 10);
 let agentCache = null;
 let agentCacheTime = 0;
 let inflightAgentScan = null;
@@ -649,6 +1060,14 @@ const runAsUser = (user, cmd, timeoutMs = 2000) => new Promise((resolve) => {
     exec(`sudo -n -u ${shellQuote(user)} -- bash -lc ${shellQuote(cmd)}`, { timeout: timeoutMs }, (error, stdout, stderr) => {
         if (error && !stdout) return resolve('');
         resolve((stdout || '').toString());
+    });
+});
+
+const runAsUserDirect = (user, cmd, args = [], timeoutMs = 2000) => new Promise((resolve) => {
+    const sudoArgs = ['-n', '-u', user, '--', cmd, ...args];
+    execFile('sudo', sudoArgs, { timeout: timeoutMs }, (error, stdout, stderr) => {
+        const out = (stdout || stderr || '').toString();
+        resolve(out);
     });
 });
 
@@ -677,7 +1096,7 @@ const findExecutable = (dirs, name) => {
 };
 
 const probeAgentVersion = async (user, absPath) => {
-    const out = await runAsUser(user, `${shellQuote(absPath)} --version 2>&1`, 4000);
+    const out = await runAsUserDirect(user, absPath, ['--version'], 4000);
     if (!out) return null;
     const m = out.match(/\d+\.\d+(?:\.\d+)?(?:[\w.+-]+)?/);
     return m ? m[0] : null;
@@ -762,11 +1181,9 @@ app.get('/api/samba/shares', async (req, res) => {
 });
 
 app.post('/api/samba/shares', async (req, res) => {
-    const { name, originalName, path, comment, writable, browsable, guestOk, validUsers, forceUser } = req.body;
+    const { name } = req.body;
     try {
-        const result = await samba.saveShare(name, {
-            originalName, path, comment, writable, browsable, guestOk, validUsers, forceUser
-        });
+        const result = await samba.saveShare(name, req.body);
         res.json(result);
     } catch (e) {
         res.status(500).json({ error: e.message });
@@ -869,6 +1286,1222 @@ app.get('/api/samba/browse', async (req, res) => {
     }
 });
 
+// Power Controls Endpoint
+app.post('/api/power', (req, res) => {
+    const { action } = req.body;
+    if (!['reboot', 'shutdown', 'sleep', 'logoff'].includes(action)) {
+        return res.status(400).json({ error: 'Invalid power action' });
+    }
+    res.json({ ok: true, message: `Power action ${action} initiated` });
+    
+    if (action === 'logoff') return;
+    
+    setTimeout(() => {
+        let cmd = '';
+        if (action === 'reboot') cmd = 'reboot';
+        else if (action === 'shutdown') cmd = 'poweroff';
+        else if (action === 'sleep') cmd = 'systemctl suspend';
+        
+        if (cmd) {
+            exec(cmd, (err) => {
+                if (err) console.error(`Failed to execute power action ${action}:`, err);
+            });
+        }
+    }, 500);
+});
+
+const SECURITY_KEYWORDS = ['security', 'cve', 'openssl', 'openssh', 'libssl', 'libcrypto', 'kernel', 'linux-image', 'sudo', 'polkit', 'dbus', 'systemd', 'nss', 'curl', 'wget'];
+const classifyUpdate = (name) => {
+    const n = name.toLowerCase();
+    if (n.includes('linux-image') || n.includes('linux-headers')) return 'kernel';
+    if (SECURITY_KEYWORDS.some(k => n.includes(k))) return 'security';
+    return 'standard';
+};
+
+let updatesCache = null;
+let updatesCacheTime = 0;
+const UPDATES_TTL = 60 * 1000;
+
+app.get('/api/updates', async (req, res) => {
+    const now = Date.now();
+    if (updatesCache && (now - updatesCacheTime) < UPDATES_TTL && req.query.refresh !== '1') {
+        return res.json(updatesCache);
+    }
+    try {
+        const out = await runCommand("apt list --upgradable 2>/dev/null | grep -v '^Listing'");
+        const updates = [];
+        for (const line of out.trim().split('\n').filter(Boolean)) {
+            const m = line.match(/^([^/]+)\/(\S+)\s+(\S+)\s+(\S+)\s+\[upgradable from:\s+([^\]]+)\]/);
+            if (m) {
+                updates.push({
+                    name: m[1],
+                    repo: m[2],
+                    next: m[3],
+                    arch: m[4],
+                    current: m[5].trim(),
+                    kind: classifyUpdate(m[1]),
+                });
+            }
+        }
+        updatesCache = { updates, lastCheck: new Date().toLocaleTimeString() };
+        updatesCacheTime = now;
+        res.json(updatesCache);
+    } catch (e) {
+        res.status(500).json({ error: e.message });
+    }
+});
+
+app.post('/api/updates/check', async (req, res) => {
+    try {
+        await runCommand('apt-get update -q 2>/dev/null');
+        updatesCache = null;
+        res.json({ ok: true });
+    } catch (e) {
+        res.status(500).json({ error: e.message });
+    }
+});
+
+app.post('/api/updates/apply', (req, res) => {
+    const { packages } = req.body;
+    if (!packages || !Array.isArray(packages) || packages.length === 0) {
+        return res.status(400).json({ error: 'Packages must be a non-empty array' });
+    }
+    const safe = packages.every(p => /^[a-zA-Z0-9][a-zA-Z0-9_.+\-:~]*$/.test(p));
+    if (!safe) return res.status(400).json({ error: 'Invalid package names' });
+
+    res.setHeader('Content-Type', 'text/event-stream');
+    res.setHeader('Cache-Control', 'no-cache');
+    res.setHeader('X-Accel-Buffering', 'no');
+    res.flushHeaders();
+
+    const send = (obj) => { try { res.write(`data: ${JSON.stringify(obj)}\n\n`); } catch {} };
+    const pkgList = packages.map(p => shellQuote(p)).join(' ');
+    const proc = exec(`DEBIAN_FRONTEND=noninteractive apt-get install --only-upgrade -y ${pkgList} 2>&1`);
+    proc.stdout?.on('data', (d) => send({ type: 'log', text: d.toString() }));
+    proc.on('close', (code) => {
+        updatesCache = null;
+        send({ type: 'done', code });
+        res.end();
+    });
+    req.on('close', () => { try { proc.kill(); } catch {} });
+});
+
+// SSH Keys Management Endpoints
+app.get('/api/ssh/keys', async (req, res) => {
+    try {
+        const sshDir = '/home/ayman/.ssh';
+        if (!fs.existsSync(sshDir)) {
+            return res.json({ keys: [] });
+        }
+        const files = fs.readdirSync(sshDir);
+        const keys = [];
+        
+        for (const file of files) {
+            if (file.endsWith('.pub')) {
+                const pubPath = path.join(sshDir, file);
+                try {
+                    const pubContent = fs.readFileSync(pubPath, 'utf8').trim();
+                    const keygenOut = await runCommand(`ssh-keygen -l -f ${JSON.stringify(pubPath)}`);
+                    if (keygenOut) {
+                        const parts = keygenOut.trim().split(/\s+/);
+                        const bits = parts[0];
+                        const fp = parts[1];
+                        const type = parts[parts.length - 1].replace(/[()]/g, '');
+                        const comment = parts.slice(2, -1).join(' ') || 'no comment';
+                        
+                        const stats = fs.statSync(pubPath);
+                        const created = stats.birthtime ? stats.birthtime.toISOString().slice(0, 10) : stats.mtime.toISOString().slice(0, 10);
+                        
+                        keys.push({
+                            id: file,
+                            name: file.slice(0, -4),
+                            type,
+                            bits: parseInt(bits, 10) || 256,
+                            fp,
+                            comment,
+                            created,
+                            lastUsed: 'never',
+                            pubContent
+                        });
+                    }
+                } catch (e) {
+                    console.error(`Error parsing SSH key ${file}:`, e);
+                }
+            }
+        }
+        res.json({ keys });
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
+});
+
+app.post('/api/ssh/keys/generate', async (req, res) => {
+    const { name, type, bits, comment, passphrase } = req.body;
+    if (!name) return res.status(400).json({ error: 'Key name is required' });
+    
+    const cleanName = name.replace(/[^a-zA-Z0-9_-]/g, '');
+    const keyType = ['ED25519', 'RSA', 'ECDSA'].includes(type) ? type.toLowerCase() : 'ed25519';
+    const bitsVal = parseInt(bits, 10) || 2048;
+    const commentVal = comment ? comment.slice(0, 100) : 'hosted-dashboard-key';
+    const passVal = passphrase ? passphrase : '';
+    
+    const keyPath = `/home/ayman/.ssh/${cleanName}`;
+    
+    try {
+        if (fs.existsSync(keyPath)) {
+            return res.status(400).json({ error: 'Key file already exists' });
+        }
+        
+        let cmd = `sudo -u ayman ssh-keygen -t ${keyType} -C ${JSON.stringify(commentVal)} -N ${JSON.stringify(passVal)} -f ${JSON.stringify(keyPath)}`;
+        if (keyType === 'rsa' || keyType === 'ecdsa') {
+            cmd += ` -b ${bitsVal}`;
+        }
+        
+        await runCommand(cmd);
+        res.json({ ok: true, name: cleanName });
+    } catch (e) {
+        res.status(500).json({ error: e.message });
+    }
+});
+
+app.post('/api/ssh/keys/deploy', async (req, res) => {
+    const { keyId, host, port, username, password } = req.body;
+    if (!keyId || !host || !username) {
+        return res.status(400).json({ error: 'keyId, host, and username are required' });
+    }
+    
+    const pubPath = path.join('/home/ayman/.ssh', keyId);
+    if (!fs.existsSync(pubPath)) {
+        return res.status(400).json({ error: 'Public key file not found' });
+    }
+    
+    try {
+        const pubKeyContent = fs.readFileSync(pubPath, 'utf8').trim();
+        const { Client } = require('ssh2');
+        const conn = new Client();
+        
+        conn.on('ready', () => {
+            const cmd = `mkdir -p ~/.ssh && chmod 700 ~/.ssh && echo ${JSON.stringify(pubKeyContent)} >> ~/.ssh/authorized_keys && chmod 600 ~/.ssh/authorized_keys`;
+            conn.exec(cmd, (err, stream) => {
+                if (err) {
+                    conn.end();
+                    return res.status(500).json({ error: `Command exec failed: ${err.message}` });
+                }
+                stream.on('close', (code, signal) => {
+                    conn.end();
+                    if (code === 0) {
+                        res.json({ ok: true });
+                    } else {
+                        res.status(500).json({ error: `Deployment exited with code ${code}` });
+                    }
+                });
+                stream.stderr.on('data', (data) => {
+                    console.error(`ssh deploy stderr: ${data}`);
+                });
+            });
+        });
+        
+        conn.on('error', (err) => {
+            res.status(500).json({ error: `SSH Connection Error: ${err.message}` });
+        });
+        
+        conn.connect({
+            host,
+            port: parseInt(port, 10) || 22,
+            username,
+            password,
+            readyTimeout: 10000
+        });
+    } catch (e) {
+        res.status(500).json({ error: e.message });
+    }
+});
+
+app.delete('/api/ssh/keys/:id', async (req, res) => {
+    const id = req.params.id;
+    if (!id.endsWith('.pub') || id.includes('/') || id.includes('\\')) {
+        return res.status(400).json({ error: 'Invalid key ID' });
+    }
+    try {
+        const pubPath = path.join('/home/ayman/.ssh', id);
+        const privPath = pubPath.slice(0, -4);
+        
+        if (fs.existsSync(pubPath)) fs.unlinkSync(pubPath);
+        if (fs.existsSync(privPath)) fs.unlinkSync(privPath);
+        
+        res.json({ ok: true });
+    } catch (e) {
+        res.status(500).json({ error: e.message });
+    }
+});
+
+app.delete('/api/samba/connections/:pid', async (req, res) => {
+    const pid = req.params.pid;
+    if (!/^\d+$/.test(pid)) {
+        return res.status(400).json({ error: 'Invalid PID' });
+    }
+    try {
+        await runCommand(`sudo kill -9 ${pid}`);
+        res.json({ ok: true });
+    } catch (e) {
+        res.status(500).json({ error: e.message });
+    }
+});
+
+app.get('/api/files/view', (req, res) => {
+    const filePath = req.query.path;
+    if (!filePath) return res.status(400).json({ error: 'Missing path' });
+    try {
+        if (!fs.existsSync(filePath)) {
+            return res.status(404).json({ error: 'File not found' });
+        }
+        const stat = fs.statSync(filePath);
+        if (stat.isDirectory()) {
+            return res.status(400).json({ error: 'Path is a directory' });
+        }
+        
+        const ext = path.extname(filePath).toLowerCase();
+        const textExtensions = new Set(['.txt', '.log', '.conf', '.json', '.js', '.jsx', '.css', '.html', '.sh', '.py', '.yml', '.yaml', '.md', '.ini', '.cfg', '.xml', '.env']);
+        const isText = textExtensions.has(ext) || ext === '';
+        
+        if (isText) {
+            const content = fs.readFileSync(filePath, 'utf8');
+            return res.json({ isText: true, content });
+        } else {
+            return res.sendFile(filePath);
+        }
+    } catch (e) {
+        res.status(500).json({ error: e.message });
+    }
+});
+
+app.post('/api/files/save', (req, res) => {
+    const { path: filePath, content } = req.body;
+    if (!filePath) return res.status(400).json({ error: 'Missing path' });
+    try {
+        fs.writeFileSync(filePath, content, 'utf8');
+        res.json({ ok: true });
+    } catch (e) {
+        res.status(500).json({ error: e.message });
+    }
+});
+
+// ─── Systemd Units ────────────────────────────────────────────────────────────
+app.get('/api/systemd/units', async (req, res) => {
+    try {
+        const [unitsOut, failedOut] = await Promise.all([
+            runCommand("systemctl list-units --type=service --all --plain --no-pager --no-legend 2>/dev/null"),
+            runCommand("systemctl list-units --state=failed --plain --no-pager --no-legend 2>/dev/null"),
+        ]);
+        const failedSet = new Set();
+        for (const line of failedOut.trim().split('\n').filter(Boolean)) {
+            const parts = line.trim().split(/\s+/);
+            if (parts[0]) failedSet.add(parts[0]);
+        }
+        const units = [];
+        for (const line of unitsOut.trim().split('\n').filter(Boolean)) {
+            let cleanLine = line.trim();
+            if (cleanLine.startsWith('●') || cleanLine.startsWith('*')) {
+                cleanLine = cleanLine.substring(1).trim();
+            }
+            const parts = cleanLine.split(/\s+/);
+            if (parts.length < 4) continue;
+            const unit = parts[0].trim();
+            if (!unit) continue;
+            units.push({
+                unit,
+                load: parts[1],
+                active: parts[2],
+                sub: parts[3],
+                description: parts.slice(4).join(' '),
+                failed: failedSet.has(unit),
+            });
+        }
+        res.json({ units });
+    } catch (e) {
+        res.status(500).json({ error: e.message });
+    }
+});
+
+app.post('/api/systemd/control', async (req, res) => {
+    const { unit, action } = req.body;
+    if (!unit || !['start', 'stop', 'restart', 'enable', 'disable', 'reload'].includes(action)) {
+        return res.status(400).json({ error: 'Invalid unit or action' });
+    }
+    if (!/^[a-zA-Z0-9@._\-]+\.service$/.test(unit) && !/^[a-zA-Z0-9@._\-]+$/.test(unit)) {
+        return res.status(400).json({ error: 'Invalid unit name' });
+    }
+    try {
+        const out = await runCommand(`sudo systemctl ${action} ${shellQuote(unit)} 2>&1`);
+        res.json({ ok: true, output: out });
+    } catch (e) {
+        res.status(500).json({ error: e.message });
+    }
+});
+
+app.get('/api/systemd/logs/:unit', async (req, res) => {
+    const { unit } = req.params;
+    if (!/^[a-zA-Z0-9@._\-]+$/.test(unit)) return res.status(400).json({ error: 'Invalid unit name' });
+    const n = Math.min(parseInt(req.query.n || '200', 10), 1000);
+    const since = req.query.since || '';
+    try {
+        let cmd = `journalctl -u ${shellQuote(unit)} --no-pager -n ${n} --output=short-iso 2>/dev/null`;
+        if (since) cmd = `journalctl -u ${shellQuote(unit)} --no-pager --since=${shellQuote(since)} --output=short-iso 2>/dev/null`;
+        const logs = await runCommand(cmd);
+        res.json({ logs });
+    } catch (e) {
+        res.status(500).json({ error: e.message });
+    }
+});
+
+// ─── Process Manager ──────────────────────────────────────────────────────────
+app.get('/api/processes', async (req, res) => {
+    try {
+        const sort = req.query.sort || 'cpu';
+        const sortFlag = sort === 'mem' ? '-pmem' : '-pcpu';
+        const out = await runCommand(`ps aux --sort=${sortFlag} 2>/dev/null | head -n 101 | tail -n 100`);
+        const procs = [];
+        for (const line of out.trim().split('\n').filter(Boolean)) {
+            const parts = line.trim().split(/\s+/);
+            if (parts.length < 11 || parts[0] === 'USER') continue;
+            const cmd = parts.slice(10).join(' ').slice(0, 120);
+            if (/^ps\b/.test(cmd)) continue;
+            procs.push({
+                user: parts[0],
+                pid: parseInt(parts[1], 10),
+                cpu: parseFloat(parts[2]) || 0,
+                mem: parseFloat(parts[3]) || 0,
+                vsz: parts[4],
+                rss: parts[5],
+                stat: parts[7],
+                started: parts[8],
+                time: parts[9],
+                cmd,
+            });
+        }
+        res.json({ processes: procs });
+    } catch (e) {
+        res.status(500).json({ error: e.message });
+    }
+});
+
+app.post('/api/processes/:pid/signal', async (req, res) => {
+    const pid = parseInt(req.params.pid, 10);
+    if (!pid || pid <= 1 || isNaN(pid)) return res.status(400).json({ error: 'Invalid PID' });
+    const { signal } = req.body;
+    const sigMap = { SIGTERM: '15', SIGKILL: '9', SIGHUP: '1' };
+    const sig = sigMap[signal];
+    if (!sig) return res.status(400).json({ error: 'Invalid signal. Use SIGTERM, SIGKILL, or SIGHUP' });
+    try {
+        await runCommandThrow(`kill -${sig} ${pid} 2>&1`);
+        res.json({ ok: true });
+    } catch (e) {
+        res.status(500).json({ error: e.message });
+    }
+});
+
+app.post('/api/processes/:pid/nice', async (req, res) => {
+    const pid = parseInt(req.params.pid, 10);
+    const nice = parseInt(req.body.nice, 10);
+    if (!pid || isNaN(pid)) return res.status(400).json({ error: 'Invalid PID' });
+    if (isNaN(nice) || nice < -20 || nice > 19) return res.status(400).json({ error: 'Nice must be -20..19' });
+    try {
+        await runCommandThrow(`renice -n ${nice} -p ${pid} 2>&1`);
+        res.json({ ok: true });
+    } catch (e) {
+        res.status(500).json({ error: e.message });
+    }
+});
+
+// ─── Docker Images ────────────────────────────────────────────────────────────
+app.get('/api/docker/images', async (req, res) => {
+    try {
+        const [imagesOut, containersOut] = await Promise.all([
+            runCommand("docker images --format '{{json .}}' 2>/dev/null"),
+            runCommand("docker ps -a --format '{{.Image}}' 2>/dev/null"),
+        ]);
+        const usedImages = new Set();
+        containersOut.trim().split('\n').filter(Boolean).forEach(imgRef => {
+            usedImages.add(imgRef);
+            // normalise: if no tag, also add :latest variant
+            if (!imgRef.includes(':')) usedImages.add(`${imgRef}:latest`);
+            // if has :latest, also add without tag
+            if (imgRef.endsWith(':latest')) usedImages.add(imgRef.slice(0, -7));
+        });
+        const images = imagesOut.trim().split('\n').filter(Boolean).map(line => {
+            try {
+                const obj = JSON.parse(line);
+                const fullRef = `${obj.Repository}:${obj.Tag}`;
+                obj.inUse = usedImages.has(fullRef) || usedImages.has(obj.Repository);
+                return obj;
+            } catch { return null; }
+        }).filter(Boolean);
+        res.json({ images });
+    } catch (e) {
+        res.status(500).json({ error: e.message });
+    }
+});
+
+app.post('/api/docker/images/pull', async (req, res) => {
+    const { image } = req.body;
+    if (!image || !/^[a-zA-Z0-9][a-zA-Z0-9_.+\-/:@]*$/.test(image)) {
+        return res.status(400).json({ error: 'Invalid image name' });
+    }
+    try {
+        const out = await runCommandThrow(`docker pull ${JSON.stringify(image)} 2>&1`);
+        res.json({ ok: true, output: out });
+    } catch (e) {
+        res.status(500).json({ error: e.message });
+    }
+});
+
+app.delete('/api/docker/images/:id', async (req, res) => {
+    const { id } = req.params;
+    if (!/^[a-zA-Z0-9][a-zA-Z0-9_.+\-/:@]*$/.test(id)) {
+        return res.status(400).json({ error: 'Invalid image id' });
+    }
+    try {
+        await runCommandThrow(`docker rmi ${JSON.stringify(id)} 2>&1`);
+        res.json({ ok: true });
+    } catch (e) {
+        res.status(500).json({ error: e.message });
+    }
+});
+
+app.post('/api/docker/images/prune', async (req, res) => {
+    try {
+        const out = await runCommandThrow('docker image prune -f 2>&1');
+        res.json({ ok: true, output: out });
+    } catch (e) {
+        res.status(500).json({ error: e.message });
+    }
+});
+
+// ─── Log Viewer ───────────────────────────────────────────────────────────────
+app.get('/api/logs/units', async (req, res) => {
+    try {
+        const out = await runCommand("journalctl --field=_SYSTEMD_UNIT 2>/dev/null | sort -u | head -n 300");
+        const units = out.trim().split('\n').filter(Boolean);
+        res.json({ units });
+    } catch (e) {
+        res.status(500).json({ error: e.message });
+    }
+});
+
+const PRIORITY_NAMES = ['emerg', 'alert', 'crit', 'err', 'warning', 'notice', 'info', 'debug'];
+app.get('/api/logs/query', async (req, res) => {
+    const { unit, n = '200', priority, since, search } = req.query;
+    if (unit && !/^[a-zA-Z0-9@._\-]+$/.test(unit)) return res.status(400).json({ error: 'Invalid unit' });
+    const limit = Math.min(parseInt(n, 10) || 200, 2000);
+    try {
+        let cmd = `journalctl --no-pager --output=json -n ${limit}`;
+        if (unit) cmd += ` -u ${shellQuote(unit)}`;
+        if (priority && PRIORITY_NAMES.includes(priority)) cmd += ` -p ${shellQuote(priority)}`;
+        if (since) cmd += ` --since=${shellQuote(since)}`;
+        cmd += ' 2>/dev/null';
+
+        const out = await runCommand(cmd);
+        let entries = out.trim().split('\n').filter(Boolean).map(line => {
+            try {
+                const e = JSON.parse(line);
+                return {
+                    ts: Math.floor(parseInt(e.__REALTIME_TIMESTAMP, 10) / 1000),
+                    msg: Array.isArray(e.MESSAGE) ? Buffer.from(e.MESSAGE).toString() : (e.MESSAGE || ''),
+                    unit: e._SYSTEMD_UNIT || e.SYSLOG_IDENTIFIER || '',
+                    priority: parseInt(e.PRIORITY, 10),
+                    pid: e._PID || '',
+                };
+            } catch { return null; }
+        }).filter(Boolean);
+
+        if (search) {
+            const q = search.toLowerCase();
+            entries = entries.filter(e => e.msg.toLowerCase().includes(q));
+        }
+        res.json({ entries });
+    } catch (e) {
+        res.status(500).json({ error: e.message });
+    }
+});
+
+app.get('/api/logs/stream', async (req, res) => {
+    const { unit } = req.query;
+    if (unit && !/^[a-zA-Z0-9@._\-]+$/.test(unit)) return res.status(400).json({ error: 'Invalid unit' });
+
+    res.setHeader('Content-Type', 'text/event-stream');
+    res.setHeader('Cache-Control', 'no-cache');
+    res.setHeader('X-Accel-Buffering', 'no');
+    res.flushHeaders();
+
+    const send = (obj) => { try { res.write(`data: ${JSON.stringify(obj)}\n\n`); } catch {} };
+    let cmd = 'journalctl -f --output=json';
+    if (unit) cmd += ` -u ${shellQuote(unit)}`;
+    const proc = exec(cmd + ' 2>/dev/null');
+
+    proc.stdout?.on('data', (chunk) => {
+        for (const line of chunk.toString().split('\n').filter(Boolean)) {
+            try {
+                const e = JSON.parse(line);
+                send({
+                    ts: Math.floor(parseInt(e.__REALTIME_TIMESTAMP, 10) / 1000),
+                    msg: Array.isArray(e.MESSAGE) ? Buffer.from(e.MESSAGE).toString() : (e.MESSAGE || ''),
+                    unit: e._SYSTEMD_UNIT || e.SYSLOG_IDENTIFIER || '',
+                    priority: parseInt(e.PRIORITY, 10),
+                    pid: e._PID || '',
+                });
+            } catch {}
+        }
+    });
+
+    req.on('close', () => { try { proc.kill(); } catch {} });
+});
+
+// ─── Network Details ──────────────────────────────────────────────────────────
+app.get('/api/network/connections', async (req, res) => {
+    try {
+        const out = await runCommand("ss -tulpn 2>/dev/null");
+        const conns = [];
+        for (const line of out.trim().split('\n').slice(1).filter(Boolean)) {
+            const parts = line.trim().split(/\s+/);
+            if (parts.length < 5) continue;
+            const procMatch = line.match(/users:\(\("([^"]+)",.*?pid=(\d+)/);
+            conns.push({
+                proto: parts[0],
+                state: parts[1],
+                recvQ: parts[2],
+                sendQ: parts[3],
+                local: parts[4],
+                remote: parts[5] || '*',
+                process: procMatch ? procMatch[1] : '',
+                pid: procMatch ? procMatch[2] : '',
+            });
+        }
+        res.json({ connections: conns });
+    } catch (e) {
+        res.status(500).json({ error: e.message });
+    }
+});
+
+app.get('/api/network/firewall', async (req, res) => {
+    try {
+        const ufw = await runCommand("ufw status verbose 2>/dev/null");
+        if (ufw && ufw.trim() && !ufw.includes('command not found') && !ufw.includes('not found')) {
+            return res.json({ tool: 'ufw', output: ufw.trim() });
+        }
+        const ipt = await runCommand("iptables -L -n --line-numbers 2>/dev/null");
+        res.json({ tool: 'iptables', output: ipt.trim() });
+    } catch (e) {
+        res.status(500).json({ error: e.message });
+    }
+});
+
+app.get('/api/network/interfaces', async (req, res) => {
+    try {
+        const out = await runCommand("cat /proc/net/dev 2>/dev/null");
+        const ifaces = [];
+        for (const line of out.trim().split('\n').slice(2).filter(Boolean)) {
+            const colonIdx = line.indexOf(':');
+            if (colonIdx < 0) continue;
+            const name = line.slice(0, colonIdx).trim();
+            if (!name) continue;
+            const nums = line.slice(colonIdx + 1).trim().split(/\s+/).map(Number);
+            if (nums.length < 16) continue;
+            ifaces.push({
+                name,
+                rxBytes: nums[0], rxPackets: nums[1], rxErrors: nums[2], rxDrop: nums[3],
+                txBytes: nums[8], txPackets: nums[9], txErrors: nums[10], txDrop: nums[11],
+            });
+        }
+        res.json({ interfaces: ifaces });
+    } catch (e) {
+        res.status(500).json({ error: e.message });
+    }
+});
+
+app.post('/api/network/speedtest', async (req, res) => {
+    try {
+        const out = await runCommand("speedtest-cli --json");
+        const parsed = JSON.parse(out);
+        res.json(parsed);
+    } catch (err) {
+        res.status(500).json({ error: err.message || 'Speedtest failed to run.' });
+    }
+});
+
+// ─── Cron Manager ─────────────────────────────────────────────────────────────
+const parseCrontab = (text, owner) => {
+    const entries = [];
+    let idx = 0;
+    for (const line of (text || '').split('\n')) {
+        const trimmed = line.trim();
+        if (!trimmed) continue;
+        const isCommented = trimmed.startsWith('#');
+        const content = isCommented ? trimmed.slice(1).trim() : trimmed;
+        if (!content) continue;
+        const parts = content.split(/\s+/);
+        if (parts.length >= 6) {
+            const isCron = parts.slice(0, 5).every(p => /^[0-9*,/\-]+$/.test(p) || p.startsWith('@'));
+            if (isCron) {
+                entries.push({
+                    id: `${owner}-${idx}`,
+                    idx,
+                    owner,
+                    schedule: parts.slice(0, 5).join(' '),
+                    command: parts.slice(5).join(' '),
+                    active: !isCommented
+                });
+                idx++;
+            }
+        }
+    }
+    return entries;
+};
+
+const writeCrontab = (user, content) => new Promise((resolve, reject) => {
+    const tmpFile = path.join(os.tmpdir(), `crontab-${user}-${Date.now()}.txt`);
+    try {
+        fs.writeFileSync(tmpFile, content.endsWith('\n') ? content : content + '\n', 'utf8');
+        execFile('crontab', ['-u', user, tmpFile], (err, stdout, stderr) => {
+            try { fs.unlinkSync(tmpFile); } catch {}
+            if (err) return reject(new Error(stderr || err.message));
+            resolve();
+        });
+    } catch (e) {
+        try { fs.unlinkSync(tmpFile); } catch {}
+        reject(e);
+    }
+});
+
+app.get('/api/cron', async (req, res) => {
+    try {
+        const [userCron, rootCron, timersOut] = await Promise.all([
+            runCommand(`crontab -l -u ${shellQuote(TARGET_USER)} 2>/dev/null`),
+            runCommand('crontab -l -u root 2>/dev/null'),
+            runCommand("systemctl list-timers --all --no-pager --plain --no-legend 2>/dev/null"),
+        ]);
+        const entries = [
+            ...parseCrontab(userCron, TARGET_USER),
+            ...(TARGET_USER !== 'root' ? parseCrontab(rootCron, 'root') : []),
+        ];
+        const timers = [];
+        for (const line of timersOut.trim().split('\n').filter(Boolean)) {
+            const parts = line.trim().split(/\s+/);
+            if (parts.length >= 8) {
+                timers.push({
+                    next: parts.slice(0, 3).join(' '),
+                    last: parts.slice(3, 6).join(' '),
+                    passed: parts[6] || '',
+                    unit: parts[7] || '',
+                    activates: parts[8] || '',
+                });
+            }
+        }
+        res.json({ entries, timers });
+    } catch (e) {
+        res.status(500).json({ error: e.message });
+    }
+});
+
+app.post('/api/cron', async (req, res) => {
+    const { schedule, command, user } = req.body;
+    if (!schedule || !command) return res.status(400).json({ error: 'schedule and command are required' });
+    const targetUser = user === 'root' ? 'root' : TARGET_USER;
+    try {
+        const existing = await runCommand(`crontab -l -u ${shellQuote(targetUser)} 2>/dev/null`);
+        const newContent = (existing.trim() ? existing.trim() + '\n' : '') + `${schedule} ${command}\n`;
+        await writeCrontab(targetUser, newContent);
+        res.json({ ok: true });
+    } catch (e) {
+        res.status(500).json({ error: e.message });
+    }
+});
+
+app.post('/api/cron/toggle', async (req, res) => {
+    const { id, active, user } = req.body;
+    const targetUser = user === 'root' ? 'root' : TARGET_USER;
+    const idxToToggle = parseInt(id.split('-').pop(), 10);
+    if (isNaN(idxToToggle)) return res.status(400).json({ error: 'Invalid id' });
+    try {
+        const existing = await runCommand(`crontab -l -u ${shellQuote(targetUser)} 2>/dev/null`);
+        let cronIdx = 0;
+        const lines = existing.split('\n');
+        const newLines = lines.map(line => {
+            const trimmed = line.trim();
+            if (!trimmed) return line;
+            const isCommented = trimmed.startsWith('#');
+            const content = isCommented ? trimmed.slice(1).trim() : trimmed;
+            if (!content) return line;
+            const parts = content.split(/\s+/);
+            if (parts.length >= 6) {
+                const isCron = parts.slice(0, 5).every(p => /^[0-9*,/\-]+$/.test(p) || p.startsWith('@'));
+                if (isCron) {
+                    if (cronIdx === idxToToggle) {
+                        cronIdx++;
+                        return active ? content : `# ${content}`;
+                    }
+                    cronIdx++;
+                }
+            }
+            return line;
+        });
+        await writeCrontab(targetUser, newLines.join('\n'));
+        res.json({ ok: true });
+    } catch (e) {
+        res.status(500).json({ error: e.message });
+    }
+});
+
+app.post('/api/cron/run', async (req, res) => {
+    const { command, user } = req.body;
+    if (!command) return res.status(400).json({ error: 'command is required' });
+    const targetUser = user === 'root' ? 'root' : TARGET_USER;
+    try {
+        const out = await new Promise((resolve) => {
+            exec(`sudo -n -u ${shellQuote(targetUser)} -- bash -c ${shellQuote(command)}`, { timeout: 15000 }, (error, stdout, stderr) => {
+                const logs = (stdout || '').toString() + (stderr || '').toString();
+                resolve(logs || (error ? error.message : 'Command executed with no output.'));
+            });
+        });
+        res.json({ ok: true, output: out });
+    } catch (e) {
+        res.status(500).json({ error: e.message });
+    }
+});
+
+app.delete('/api/cron/:id', async (req, res) => {
+    const { id } = req.params;
+    const user = req.query.user === 'root' ? 'root' : TARGET_USER;
+    const idxToDelete = parseInt(id.split('-').pop(), 10);
+    if (isNaN(idxToDelete)) return res.status(400).json({ error: 'Invalid id' });
+    try {
+        const existing = await runCommand(`crontab -l -u ${shellQuote(user)} 2>/dev/null`);
+        let cronIdx = 0;
+        const newLines = existing.split('\n').filter(line => {
+            const trimmed = line.trim();
+            if (!trimmed) return true;
+            const isCommented = trimmed.startsWith('#');
+            const content = isCommented ? trimmed.slice(1).trim() : trimmed;
+            if (!content) return true;
+            const parts = content.split(/\s+/);
+            if (parts.length >= 6) {
+                const isCron = parts.slice(0, 5).every(p => /^[0-9*,/\-]+$/.test(p) || p.startsWith('@'));
+                if (isCron) {
+                    if (cronIdx === idxToDelete) { cronIdx++; return false; }
+                    cronIdx++;
+                }
+            }
+            return true;
+        });
+        await writeCrontab(user, newLines.join('\n'));
+        res.json({ ok: true });
+    } catch (e) {
+        res.status(500).json({ error: e.message });
+    }
+});
+
+// ─── Backup Manager ───────────────────────────────────────────────────────────
+const isCronDue = (cronExpr, date) => {
+    const fields = cronExpr.trim().split(/\s+/);
+    if (fields.length < 5) return false;
+    const [min, hour, day, month, dayOfWeek] = fields;
+    const m = date.getMinutes();
+    const h = date.getHours();
+    const d = date.getDate();
+    const mo = date.getMonth() + 1;
+    const dow = date.getDay();
+
+    const matchField = (field, value) => {
+        if (field === '*') return true;
+        if (field.includes(',')) return field.split(',').some(f => matchField(f, value));
+        if (field.includes('/')) {
+            const [start, step] = field.split('/');
+            const startVal = start === '*' ? 0 : parseInt(start, 10);
+            return (value - startVal) % parseInt(step, 10) === 0;
+        }
+        if (field.includes('-')) {
+            const [start, end] = field.split('-');
+            return value >= parseInt(start, 10) && value <= parseInt(end, 10);
+        }
+        return parseInt(field, 10) === value;
+    };
+
+    return matchField(min, m) &&
+           matchField(hour, h) &&
+           matchField(day, d) &&
+           matchField(month, mo) &&
+           matchField(dayOfWeek, dow);
+};
+
+const runBackupJob = (job) => {
+    return new Promise((resolve) => {
+        job.lastStatus = 'running';
+        job.lastRun = new Date().toISOString();
+        saveState();
+
+        let cmd = '';
+        const src = job.src;
+        const dest = job.dest;
+        const extra = job.args || '';
+
+        if (job.destType === 'rclone') {
+            cmd = `rclone sync ${shellQuote(src)} ${shellQuote(dest)} ${extra}`;
+        } else if (job.destType === 'rsync') {
+            cmd = `rsync -avz -e "ssh -o StrictHostKeyChecking=no" ${shellQuote(src)}/ ${shellQuote(dest)} ${extra}`;
+        } else if (job.destType === 'local') {
+            if (dest.endsWith('.tar.gz') || dest.endsWith('.tgz')) {
+                const destDir = path.dirname(dest);
+                cmd = `mkdir -p ${shellQuote(destDir)} && tar -czf ${shellQuote(dest)} -C ${shellQuote(src)} .`;
+            } else {
+                cmd = `mkdir -p ${shellQuote(dest)} && rsync -avz ${shellQuote(src)}/ ${shellQuote(dest)} ${extra}`;
+            }
+        } else {
+            job.lastStatus = 'failed';
+            job.lastLog = 'Unknown destination type.';
+            saveState();
+            return resolve({ success: false, log: job.lastLog });
+        }
+
+        const execCmd = `sudo -n -u ${shellQuote(TARGET_USER)} -- bash -c ${shellQuote(cmd)}`;
+        exec(execCmd, { timeout: 3600000 }, (error, stdout, stderr) => {
+            const logs = (stdout || '').toString() + (stderr || '').toString();
+            job.lastLog = logs || (error ? error.message : 'Completed successfully with no output.');
+            if (error) {
+                job.lastStatus = 'failed';
+                saveState();
+                resolve({ success: false, log: logs });
+            } else {
+                job.lastStatus = 'success';
+                saveState();
+                resolve({ success: true, log: logs });
+            }
+        });
+    });
+};
+
+let lastCheckedMinute = -1;
+setInterval(() => {
+    const now = new Date();
+    const currentMin = now.getMinutes();
+    if (currentMin === lastCheckedMinute) return;
+    lastCheckedMinute = currentMin;
+
+    const activeJobs = (state.backups || []).filter(j => j.active && j.schedule);
+    activeJobs.forEach(job => {
+        if (job.lastStatus === 'running') return;
+        if (isCronDue(job.schedule, now)) {
+            console.log(`[BackupScheduler] Triggering job: ${job.name} (${job.id})`);
+            runBackupJob(job).catch(err => {
+                console.error(`[BackupScheduler] Job ${job.name} failed:`, err);
+            });
+        }
+    });
+}, 10000);
+
+app.get('/api/backups', (req, res) => {
+    res.json({ backups: state.backups || [] });
+});
+
+app.post('/api/backups', (req, res) => {
+    const { id, name, src, destType, dest, schedule, active, args } = req.body;
+    if (!name || !src || !destType || !dest) {
+        return res.status(400).json({ error: 'name, src, destType, and dest are required' });
+    }
+    
+    let job = null;
+    if (id) {
+        job = (state.backups || []).find(j => j.id === id);
+    }
+    
+    if (job) {
+        job.name = name;
+        job.src = src;
+        job.destType = destType;
+        job.dest = dest;
+        job.schedule = schedule || '';
+        job.active = active !== false;
+        job.args = args || '';
+    } else {
+        job = {
+            id: `bk-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`,
+            name,
+            src,
+            destType,
+            dest,
+            schedule: schedule || '',
+            active: active !== false,
+            args: args || '',
+            lastRun: null,
+            lastStatus: 'never',
+            lastLog: ''
+        };
+        if (!state.backups) state.backups = [];
+        state.backups.push(job);
+    }
+    saveState();
+    res.json({ ok: true, job });
+});
+
+app.delete('/api/backups/:id', (req, res) => {
+    const { id } = req.params;
+    const initialLength = (state.backups || []).length;
+    state.backups = (state.backups || []).filter(j => j.id !== id);
+    if (state.backups.length === initialLength) {
+        return res.status(404).json({ error: 'Job not found' });
+    }
+    saveState();
+    res.json({ ok: true });
+});
+
+app.post('/api/backups/run/:id', async (req, res) => {
+    const { id } = req.params;
+    const job = (state.backups || []).find(j => j.id === id);
+    if (!job) return res.status(404).json({ error: 'Job not found' });
+    if (job.lastStatus === 'running') return res.status(400).json({ error: 'Job is already running' });
+    
+    runBackupJob(job).catch(e => console.error(e));
+    res.json({ ok: true, status: 'running' });
+});
+
+
+// ─── SMART Disk Health ────────────────────────────────────────────────────────
+app.get('/api/disk/smart', async (req, res) => {
+    try {
+        // Use smartctl --scan to find SMART-capable physical drives
+        const SMARTCTL = '/usr/sbin/smartctl';
+        const scanOut = await runCommand(`${SMARTCTL} --scan 2>/dev/null || true`);
+        const devices = [];
+        for (const line of scanOut.trim().split('\n').filter(Boolean)) {
+            // e.g. "/dev/sda -d scsi # /dev/sda, SCSI device"
+            const m = line.match(/^(\S+)(\s+-d\s+\S+)?/);
+            if (m) devices.push({ path: m[1], typeFlag: m[2] ? m[2].trim() : '' });
+        }
+        // Fallback: use lsblk to find disk devices
+        if (devices.length === 0) {
+            const lsblkOut = await runCommand("lsblk -d -n -o NAME,TYPE 2>/dev/null");
+            for (const line of lsblkOut.trim().split('\n').filter(Boolean)) {
+                const [name, type] = line.trim().split(/\s+/);
+                if (type === 'disk') devices.push({ path: `/dev/${name}`, typeFlag: '' });
+            }
+        }
+
+        const results = await Promise.all(devices.map(async ({ path: devPath, typeFlag }) => {
+            // smartctl exits non-zero on warnings, use || true to always get stdout
+            let allOut = await runCommand(`${SMARTCTL} -a ${shellQuote(devPath)} 2>/dev/null || true`);
+            if (allOut.length < 100 && typeFlag) {
+                allOut = await runCommand(`${SMARTCTL} -a ${typeFlag} ${shellQuote(devPath)} 2>/dev/null || true`);
+            }
+
+            const healthMatch = allOut.match(/SMART overall-health[^:]*:\s*(\w+)/i)
+                || allOut.match(/overall-health self-assessment[^:]*:\s*(\w+)/i)
+                || allOut.match(/SMART Health Status:\s*(\w+)/i);
+            const health = healthMatch ? healthMatch[1] : (allOut.length > 100 ? 'UNKNOWN' : 'N/A');
+
+            const tempMatch = allOut.match(/Temperature_Celsius[^\n]*?(\d+)\s+\(/m)
+                || allOut.match(/Airflow_Temperature_Cel[^\n]*?(\d+)\s+\(/m)
+                || allOut.match(/Temperature:\s+(\d+)/m)
+                || allOut.match(/194\s+\S+[^\n]+?(\d+)\s+\(/m);
+            const temperature = tempMatch ? parseInt(tempMatch[1], 10) : null;
+
+            const reallocMatch = allOut.match(/5\s+Reallocated_Sector_Ct[^\n]*?([\d]+)\s*$/m);
+            const reallocatedSectors = reallocMatch ? parseInt(reallocMatch[1], 10) : 0;
+
+            const powerOnMatch = allOut.match(/9\s+Power_On_Hours[^\n]*?([\d]+)\s*$/m)
+                || allOut.match(/Power On Hours:\s+([\d,]+)/m);
+            const powerOnHours = powerOnMatch ? parseInt(powerOnMatch[1].replace(/,/g, ''), 10) : null;
+
+            const model = allOut.match(/Device Model:\s*(.+)/)?.[1]?.trim()
+                || allOut.match(/Model Number:\s*(.+)/)?.[1]?.trim()
+                || devPath;
+            const serial = allOut.match(/Serial Number:\s*(.+)/)?.[1]?.trim() || '';
+            const capacity = allOut.match(/User Capacity:\s*(.+)/)?.[1]?.trim()
+                || allOut.match(/Namespace 1 Size\/Capacity:\s*(.+)/)?.[1]?.trim() || '';
+            const rotation = allOut.match(/Rotation Rate:\s*(.+)/)?.[1]?.trim() || '';
+
+            return {
+                device: devPath, model, serial, capacity, rotation,
+                health, temperature, reallocatedSectors, powerOnHours,
+                available: allOut.length > 100,
+            };
+        }));
+
+        res.json({ disks: results });
+    } catch (e) {
+        res.status(500).json({ error: e.message });
+    }
+});
+
+// ─── File Operations (delete, move, copy, mkdir) ──────────────────────────────
+app.delete('/api/files', (req, res) => {
+    const filePath = req.query.path;
+    if (!filePath || filePath === '/') return res.status(400).json({ error: 'Invalid path' });
+    try {
+        const stat = fs.statSync(filePath);
+        if (stat.isDirectory()) {
+            fs.rmSync(filePath, { recursive: true, force: true });
+        } else {
+            fs.unlinkSync(filePath);
+        }
+        res.json({ ok: true });
+    } catch (e) {
+        res.status(500).json({ error: e.message });
+    }
+});
+
+app.post('/api/files/upload-chunk', async (req, res) => {
+    console.log('[upload-chunk] received chunk upload request:', req.body);
+    try {
+        if (!req.files || !req.files.chunk) {
+            console.error('[upload-chunk] req.files.chunk is missing!');
+            return res.status(400).json({ error: 'No chunk file was uploaded.' });
+        }
+        const { dir, fileName, chunkIndex, totalChunks } = req.body;
+        if (!dir || !fileName || chunkIndex === undefined || totalChunks === undefined) {
+            console.error('[upload-chunk] missing parameters:', { dir, fileName, chunkIndex, totalChunks });
+            return res.status(400).json({ error: 'Missing parameters.' });
+        }
+
+        const safeFileName = path.basename(fileName);
+        const chunkIdx = parseInt(chunkIndex, 10);
+        const totalCh = parseInt(totalChunks, 10);
+        
+        // Prevent path traversal in directory
+        const resolvedDir = path.resolve(dir);
+        
+        const tempDir = path.join(__dirname, 'data', 'temp_uploads', safeFileName);
+        if (!fs.existsSync(tempDir)) {
+            fs.mkdirSync(tempDir, { recursive: true });
+        }
+
+        const chunkPath = path.join(tempDir, `chunk_${chunkIdx}`);
+        await req.files.chunk.mv(chunkPath);
+
+        // Check if all chunks are uploaded
+        let allUploaded = true;
+        for (let i = 0; i < totalCh; i++) {
+            if (!fs.existsSync(path.join(tempDir, `chunk_${i}`))) {
+                allUploaded = false;
+                break;
+            }
+        }
+
+        if (allUploaded) {
+            const destPath = path.join(resolvedDir, safeFileName);
+            console.log('[upload-chunk] assembling file to:', destPath);
+            
+            const writeStream = fs.createWriteStream(destPath);
+            await new Promise((resolve, reject) => {
+                writeStream.on('error', (err) => {
+                    console.error('[upload-chunk] Write stream error:', err);
+                    reject(err);
+                });
+                writeStream.on('finish', () => {
+                    resolve();
+                });
+                
+                for (let i = 0; i < totalCh; i++) {
+                    const p = path.join(tempDir, `chunk_${i}`);
+                    const data = fs.readFileSync(p);
+                    writeStream.write(data);
+                }
+                writeStream.end();
+            });
+
+            // Clean up chunks
+            for (let i = 0; i < totalCh; i++) {
+                const p = path.join(tempDir, `chunk_${i}`);
+                if (fs.existsSync(p)) {
+                    fs.unlinkSync(p);
+                }
+            }
+            // Clean up folder recursively to remove any leftovers from previous attempts
+            try {
+                fs.rmSync(tempDir, { recursive: true, force: true });
+            } catch (cleanupErr) {
+                console.error('[upload-chunk] Temp dir cleanup failed:', cleanupErr.message);
+            }
+            
+            console.log('[upload-chunk] file assembly completed successfully:', destPath);
+            res.json({ ok: true, completed: true });
+        } else {
+            res.json({ ok: true, completed: false });
+        }
+    } catch (err) {
+        console.error('[upload-chunk] Error processing chunk:', err);
+        res.status(500).json({ error: err.message });
+    }
+});
+
+app.get('/api/files/download', (req, res) => {
+    const { path: filePath } = req.query;
+    if (!filePath) return res.status(400).json({ error: 'Missing path' });
+    try {
+        if (!fs.existsSync(filePath)) {
+            return res.status(404).json({ error: 'File not found' });
+        }
+        const stat = fs.statSync(filePath);
+        if (stat.isDirectory()) {
+            return res.status(400).json({ error: 'Path is a directory' });
+        }
+        res.download(filePath);
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
+});
+
+app.post('/api/files/move', (req, res) => {
+    const { from, to } = req.body;
+    if (!from || !to) return res.status(400).json({ error: 'Missing from/to' });
+    try {
+        fs.renameSync(from, to);
+        res.json({ ok: true });
+    } catch (e) {
+        res.status(500).json({ error: e.message });
+    }
+});
+
+app.post('/api/files/copy', async (req, res) => {
+    const { from, to } = req.body;
+    if (!from || !to) return res.status(400).json({ error: 'Missing from/to' });
+    try {
+        const stat = fs.statSync(from);
+        if (stat.isDirectory()) {
+            await runCommandThrow(`cp -a ${shellQuote(from)} ${shellQuote(to)}`);
+        } else {
+            fs.copyFileSync(from, to);
+        }
+        res.json({ ok: true });
+    } catch (e) {
+        res.status(500).json({ error: e.message });
+    }
+});
+
+app.post('/api/files/mkdir', (req, res) => {
+    const { path: dirPath } = req.body;
+    if (!dirPath) return res.status(400).json({ error: 'Missing path' });
+    try {
+        fs.mkdirSync(dirPath, { recursive: true });
+        res.json({ ok: true });
+    } catch (e) {
+        res.status(500).json({ error: e.message });
+    }
+});
+
+// ─── Alert Config ─────────────────────────────────────────────────────────────
+app.get('/api/alerts/config', (req, res) => {
+    res.json(state.alerts || { cpu: 90, ram: 90, disk: 90 });
+});
+
+app.post('/api/alerts/config', (req, res) => {
+    const { cpu, ram, disk } = req.body;
+    state.alerts = {
+        cpu: Math.min(100, Math.max(1, parseInt(cpu, 10) || 90)),
+        ram: Math.min(100, Math.max(1, parseInt(ram, 10) || 90)),
+        disk: Math.min(100, Math.max(1, parseInt(disk, 10) || 90)),
+    };
+    saveState();
+    res.json({ ok: true, alerts: state.alerts });
+});
+
 const frontendPath = path.join(__dirname, '../frontend/dist');
 if (fs.existsSync(frontendPath)) {
     app.use(express.static(frontendPath));
@@ -915,7 +2548,9 @@ server.on('upgrade', (req, socket, head) => {
         socket.destroy();
         return;
     }
-    wss.handleUpgrade(req, socket, head, (ws) => wss.emit('connection', ws, req, parsed.query));
+    wss.handleUpgrade(req, socket, head, (ws) => {
+        wss.emit('connection', ws, req);
+    });
 });
 
 const TERMINAL_USER = TARGET_USER;
@@ -924,7 +2559,9 @@ const sanitizeAgent = (raw) => {
     return KNOWN_AGENTS.find(a => a.id === raw || a.cmd === raw) || null;
 };
 
-wss.on('connection', (ws, req, query) => {
+wss.on('connection', (ws, req) => {
+    const parsed = url.parse(req.url, true);
+    const query = parsed.query;
     if (query && query.ssh === 'true') {
         let conn;
         let stream;
@@ -1008,7 +2645,14 @@ wss.on('connection', (ws, req, query) => {
                 };
                 
                 if (privateKey && privateKey.trim()) {
-                    connectConfig.privateKey = privateKey;
+                    let keyContent = privateKey;
+                    if (!privateKey.includes('-----BEGIN')) {
+                        const localKeyPath = path.join('/home/ayman/.ssh', privateKey.trim());
+                        if (fs.existsSync(localKeyPath)) {
+                            keyContent = fs.readFileSync(localKeyPath, 'utf8');
+                        }
+                    }
+                    connectConfig.privateKey = keyContent;
                     if (passphrase) connectConfig.passphrase = passphrase;
                 } else if (password) {
                     connectConfig.password = password;

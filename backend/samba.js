@@ -198,15 +198,31 @@ async function getShares() {
     for (const sec of sections) {
         if (sec.name && !systemSections.has(sec.name.toLowerCase())) {
             const props = sec.properties;
+            const isWritable = props['writable'] === 'yes' || props['read only'] === 'no';
+            const isBrowsable = props['browseable'] !== 'no' && props['browsable'] !== 'no';
+            const isGuestOk = props['guest ok'] === 'yes' || props['public'] === 'yes';
+            const vfs = props['vfs objects'] || '';
+            
             shares.push({
                 name: sec.name,
                 path: props['path'] || '',
                 comment: props['comment'] || '',
-                writable: props['writable'] === 'yes' || props['read only'] === 'no',
-                browsable: props['browseable'] !== 'no' && props['browsable'] !== 'no',
-                guestOk: props['guest ok'] === 'yes' || props['public'] === 'yes',
+                writable: isWritable,
+                browsable: isBrowsable,
+                guestOk: isGuestOk,
                 validUsers: props['valid users'] || '',
-                forceUser: props['force user'] || ''
+                forceUser: props['force user'] || '',
+                
+                // Frontend compatibility fields
+                readOnly: !isWritable,
+                guest: isGuestOk,
+                browseable: isBrowsable,
+                users: (props['valid users'] || '').split(/[\s,]+/).filter(Boolean),
+                createMask: props['create mask'] || props['create mode'] || '0664',
+                dirMask: props['directory mask'] || props['directory mode'] || '0775',
+                recycle: vfs.includes('recycle'),
+                hostsAllow: props['hosts allow'] || '',
+                hideDotfiles: props['hide dot files'] !== 'no'
             });
         }
     }
@@ -223,6 +239,10 @@ async function saveShare(name, config) {
     // Check if share exists (case insensitive)
     const existingIndex = sections.findIndex(s => s.name && s.name.toLowerCase() === name.toLowerCase());
     
+    const isWritable = config.writable !== undefined ? config.writable : (config.readOnly !== undefined ? !config.readOnly : true);
+    const isBrowsable = config.browsable !== undefined ? config.browsable : (config.browseable !== undefined ? config.browseable : true);
+    const isGuestOk = config.guestOk !== undefined ? config.guestOk : (config.guest !== undefined ? config.guest : false);
+    
     // Create new section object
     const newSec = {
         name: name.trim(),
@@ -230,20 +250,34 @@ async function saveShare(name, config) {
         properties: {
             path: config.path || '',
             comment: config.comment || '',
-            writable: config.writable ? 'yes' : 'no',
-            'read only': config.writable ? 'no' : 'yes',
-            browseable: config.browsable ? 'yes' : 'no',
-            'guest ok': config.guestOk ? 'yes' : 'no',
-            'create mask': config.writable ? '0664' : '0644',
-            'directory mask': config.writable ? '0775' : '0755'
+            writable: isWritable ? 'yes' : 'no',
+            'read only': isWritable ? 'no' : 'yes',
+            browseable: isBrowsable ? 'yes' : 'no',
+            'guest ok': isGuestOk ? 'yes' : 'no',
+            'create mask': config.createMask || (isWritable ? '0664' : '0644'),
+            'directory mask': config.dirMask || (isWritable ? '0775' : '0755')
         }
     };
     
-    if (config.validUsers && config.validUsers.trim()) {
-        newSec.properties['valid users'] = config.validUsers.trim();
+    const usersStr = config.validUsers !== undefined ? config.validUsers : (Array.isArray(config.users) ? config.users.join(' ') : config.users || '');
+    if (usersStr.trim()) {
+        newSec.properties['valid users'] = usersStr.trim();
     }
+    
     if (config.forceUser && config.forceUser.trim()) {
         newSec.properties['force user'] = config.forceUser.trim();
+    }
+    if (config.hostsAllow && config.hostsAllow.trim()) {
+        newSec.properties['hosts allow'] = config.hostsAllow.trim();
+    }
+    if (config.hideDotfiles !== undefined) {
+        newSec.properties['hide dot files'] = config.hideDotfiles ? 'yes' : 'no';
+    }
+    if (config.recycle) {
+        newSec.properties['vfs objects'] = 'recycle';
+        newSec.properties['recycle:repository'] = '.recycle';
+        newSec.properties['recycle:keeptree'] = 'yes';
+        newSec.properties['recycle:versions'] = 'yes';
     }
 
     if (existingIndex !== -1) {
@@ -557,8 +591,8 @@ async function browse(dirPath, showHidden = false) {
     try {
         const items = fs.readdirSync(targetPath, { withFileTypes: true });
         const folders = [];
+        const files = [];
         
-        // Add parent directory path if not at root
         const parent = path.dirname(targetPath);
         
         for (const item of items) {
@@ -567,28 +601,74 @@ async function browse(dirPath, showHidden = false) {
                 try {
                     const realPath = fs.realpathSync(path.join(targetPath, item.name));
                     isDir = fs.statSync(realPath).isDirectory();
-                } catch (e) {
-                    // ignore broken links
-                }
+                } catch (e) {}
             }
+            
+            const itemPath = path.join(targetPath, item.name);
+            let size = '—';
+            let mtime = '—';
+            let perm = '—';
+            let owner = 'root';
+            
+            try {
+                const stats = fs.statSync(itemPath);
+                if (!isDir) {
+                    const bytes = stats.size;
+                    if (bytes < 1024) size = bytes + ' B';
+                    else if (bytes < 1024 * 1024) size = (bytes / 1024).toFixed(1) + ' KB';
+                    else if (bytes < 1024 * 1024 * 1024) size = (bytes / (1024 * 1024)).toFixed(1) + ' MB';
+                    else size = (bytes / (1024 * 1024 * 1024)).toFixed(1) + ' GB';
+                }
+                const d = new Date(stats.mtime);
+                mtime = d.toLocaleDateString() + ' ' + d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', hour12: false });
+                
+                const mode = stats.mode;
+                const isDirChar = isDir ? 'd' : '-';
+                const rwx = (m) => [
+                    m & 4 ? 'r' : '-',
+                    m & 2 ? 'w' : '-',
+                    m & 1 ? 'x' : '-'
+                ].join('');
+                perm = isDirChar + rwx((mode >> 6) & 7) + rwx((mode >> 3) & 7) + rwx(mode & 7);
+                
+                owner = stats.uid === 0 ? 'root' : (stats.uid === 1000 ? 'ayman' : stats.uid.toString());
+            } catch (e) {}
 
             if (isDir) {
                 if (showHidden || !item.name.startsWith('.')) {
                     folders.push({
                         name: item.name,
-                        path: path.join(targetPath, item.name)
+                        path: itemPath,
+                        size: '—',
+                        mtime,
+                        perm,
+                        owner,
+                        type: 'dir'
+                    });
+                }
+            } else {
+                if (showHidden || !item.name.startsWith('.')) {
+                    files.push({
+                        name: item.name,
+                        path: itemPath,
+                        size,
+                        mtime,
+                        perm,
+                        owner,
+                        type: 'file'
                     });
                 }
             }
         }
         
-        // Sort folders alphabetically
         folders.sort((a, b) => a.name.localeCompare(b.name));
+        files.sort((a, b) => a.name.localeCompare(b.name));
         
         return {
             currentPath: targetPath,
             parentPath: targetPath === '/' ? null : parent,
-            folders
+            folders,
+            files
         };
     } catch (e) {
         throw new Error(`Failed to read path "${targetPath}": ${e.message}`);
