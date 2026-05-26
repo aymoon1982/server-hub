@@ -15,13 +15,20 @@ function SessionsProvider({ children }) {
 
   const launch = useCallback((opts) => {
     const id = 's' + (++seq.current);
+    const baseData = opts.data || null;
+    const mergedData = (opts.cwd != null || opts.env != null || opts.agent != null)
+      ? { ...(baseData || {}),
+          ...(opts.cwd != null ? { cwd: opts.cwd } : {}),
+          ...(opts.env != null ? { env: opts.env } : {}),
+          ...(opts.agent != null ? { agent: opts.agent } : {}) }
+      : baseData;
     const session = {
       id,
       type: opts.type || 'shell', // shell | agent | ssh | logs | docker
       title: opts.title || 'Shell',
       subtitle: opts.subtitle || '',
       glyph: opts.glyph || '›_',
-      data: opts.data || null,
+      data: mergedData,
       status: 'connecting',
       started: Date.now(),
     };
@@ -220,12 +227,19 @@ function RealTerminalPane({ session, active }) {
     const proto = window.location.protocol === 'https:' ? 'wss' : 'ws';
     const params = new URLSearchParams();
     if (session.type === 'agent' && session.data?.id) params.set('agent', session.data.id);
+    if (session.data?.agent) params.set('agent', session.data.agent);
     if (session.type === 'docker' && session.data?.container) params.set('docker', session.data.container);
     if (session.type === 'ssh') params.set('ssh', 'true');
+    if (session.data?.cwd) params.set('cwd', session.data.cwd);
+    if (session.data?.env != null) {
+      const envCsv = Array.isArray(session.data.env) ? session.data.env.join(',') : String(session.data.env);
+      if (envCsv) params.set('env', envCsv);
+    }
     params.set('cols', String(term.cols));
     params.set('rows', String(term.rows));
 
     const ws = new WebSocket(`${proto}://${window.location.host}/ws/terminal?${params.toString()}`);
+    ws.binaryType = 'arraybuffer';
     wsRef.current = ws;
 
     let opened = false;
@@ -252,10 +266,10 @@ function RealTerminalPane({ session, active }) {
     };
 
     ws.onmessage = (e) => {
-      if (typeof e.data === 'string') {
+      if (e.data instanceof ArrayBuffer) {
+        term.write(new TextDecoder().decode(e.data));
+      } else if (typeof e.data === 'string') {
         term.write(e.data);
-      } else if (e.data instanceof Blob) {
-        e.data.text().then((t) => term.write(t));
       }
     };
 
@@ -284,9 +298,10 @@ function RealTerminalPane({ session, active }) {
       try { fit.fit(); } catch (e) {}
     };
     window.addEventListener('resize', onWinResize);
-    setTimeout(onWinResize, 60);
+    const tid = setTimeout(onWinResize, 60);
 
     return () => {
+      clearTimeout(tid);
       window.removeEventListener('resize', onWinResize);
       try { ws.close(); } catch (e) {}
       try { term.dispose(); } catch (e) {}
@@ -316,6 +331,9 @@ function RealLogsPane({ session, active }) {
   const [logLines, setLogLines] = useState([]);
   const bodyRef = useRef(null);
   const { setSessions } = useSessions();
+  const mountedRef = useRef(true);
+  const ctrlRef = useRef(null);
+  useEffect(() => () => { mountedRef.current = false; ctrlRef.current?.abort(); }, []);
 
   useEffect(() => {
     if (active) {
@@ -326,12 +344,14 @@ function RealLogsPane({ session, active }) {
   useEffect(() => {
     const fetchLogs = async () => {
       try {
-        const res = await axios.get('/api/docker/logs', { params: { name: container } });
+        if (ctrlRef.current) ctrlRef.current.abort();
+        ctrlRef.current = new AbortController();
+        const res = await axios.get('/api/docker/logs', { params: { name: container }, signal: ctrlRef.current.signal });
         const text = res.data.logs || '';
         const lines = text.split('\n').filter(Boolean);
-        setLogLines(lines);
+        if (mountedRef.current) setLogLines(lines);
       } catch (e) {
-        setLogLines([`Failed to fetch logs: ${e.message}`]);
+        if (mountedRef.current) setLogLines([`Failed to fetch logs: ${e.message}`]);
       }
     };
 

@@ -8,9 +8,18 @@ const https = require('https');
 const http = require('http');
 const os = require('os');
 const url = require('url');
+const crypto = require('crypto');
 const { WebSocketServer } = require('ws');
 const pty = require('node-pty');
 const fileUpload = require('express-fileupload');
+
+function timingSafeCompare(a, b) {
+    if (typeof a !== 'string' || typeof b !== 'string') return false;
+    const A = Buffer.from(a);
+    const B = Buffer.from(b);
+    if (A.length !== B.length) return false;
+    return crypto.timingSafeEqual(A, B);
+}
 
 const app = express();
 const PORT = process.env.PORT || 80;
@@ -32,6 +41,10 @@ const resolveTargetUser = () => {
 
 const TARGET_USER = resolveTargetUser();
 const AGENT_TOKEN = process.env.DASHBOARD_TERMINAL_TOKEN || null;
+const SIGN_SECRET = process.env.DASHBOARD_SIGN_SECRET || (() => { const s = crypto.randomBytes(32).toString('hex'); console.warn('[sign] using ephemeral secret; set DASHBOARD_SIGN_SECRET for persistence'); return s; })();
+const TRASH_DIR = path.resolve(process.env.DASHBOARD_TRASH_DIR || '/var/cache/hosted-dashboard/trash');
+const WORKSPACES_FILE = process.env.DASHBOARD_WORKSPACES || '/var/lib/hosted-dashboard/workspaces.json';
+const ALLOWED_ENV_PASSTHROUGH = ['ANTHROPIC_API_KEY','OPENAI_API_KEY','GEMINI_API_KEY','GOOGLE_API_KEY','AZURE_OPENAI_API_KEY','OPENROUTER_API_KEY','MISTRAL_API_KEY','GROQ_API_KEY','XAI_API_KEY','DEEPSEEK_API_KEY','OLLAMA_HOST','EDITOR','VISUAL','PATH','HOME','USER','SHELL','LANG','LC_ALL','TERM','NODE_OPTIONS','GH_TOKEN','GITHUB_TOKEN','CLAUDE_CODE_USE_BEDROCK','AWS_ACCESS_KEY_ID','AWS_SECRET_ACCESS_KEY','AWS_REGION','AWS_PROFILE'];
 
 const STATE_PATH = path.join(__dirname, 'data', 'state.json');
 const ensureStateDir = () => {
@@ -379,6 +392,7 @@ const runDiscoveryInBackground = () => {
             inflightDiscovery = null;
         }
     })();
+    inflightDiscovery.catch(err => console.error('[discovery]', err && err.message));
 };
 
 const discoverServices = async () => {
@@ -536,12 +550,12 @@ app.delete('/api/services/manual/:id', (req, res) => {
 });
 
 app.post('/api/docker/control', async (req, res) => {
-    const { name, action } = req.body;
+    const { name, action } = req.body || {};
     if (!name || !['start', 'stop', 'restart'].includes(action)) {
         return res.status(400).json({ error: 'Invalid name or action' });
     }
     try {
-        await runCommand(`docker ${action} ${JSON.stringify(name)}`);
+        await runCommand(`docker ${action} ${shellQuote(name)}`);
         discoveryCache = null; // Clear cache to show new status instantly
         res.json({ ok: true });
     } catch (e) {
@@ -555,7 +569,7 @@ app.get('/api/docker/logs', async (req, res) => {
         return res.status(400).json({ error: 'Missing container name' });
     }
     try {
-        const logs = await runCommand(`docker logs --tail 200 ${JSON.stringify(name)} 2>&1`);
+        const logs = await runCommand(`docker logs --tail 200 ${shellQuote(name)} 2>&1`);
         res.json({ logs });
     } catch (e) {
         res.status(500).json({ error: e.message });
@@ -801,8 +815,7 @@ const getActiveInterfaceInfo = async () => {
                 for (const line of lines) {
                     if (line.includes(iface)) {
                         const parts = line.trim().split(/\s+/);
-                        const qualStr = parts[2].replace('.', '');
-                        const qualVal = parseFloat(qualStr);
+                        const qualVal = parseFloat(parts[2]);
                         if (!isNaN(qualVal)) {
                             linkQuality = qualVal;
                         }
@@ -1056,6 +1069,19 @@ let inflightAgentScan = null;
 
 const shellQuote = (s) => `'${String(s).replace(/'/g, "'\\''")}'`;
 
+const FILE_API_ROOT = path.resolve(process.env.FILE_API_ROOT || '/');
+const FILE_API_DENY = ['/etc','/root','/boot','/usr','/var','/proc','/sys','/dev','/lib','/lib64','/sbin','/bin'];
+function safeFilePath(p) {
+    if (typeof p !== 'string' || !p) throw Object.assign(new Error('Invalid path'), { status: 400 });
+    const abs = path.resolve(FILE_API_ROOT, p);
+    if (!abs.startsWith(FILE_API_ROOT)) throw Object.assign(new Error('Path outside allowed root'), { status: 403 });
+    if (FILE_API_DENY.some(d => abs === d || abs.startsWith(d + path.sep))) throw Object.assign(new Error('Path denied'), { status: 403 });
+    return abs;
+}
+function errMsg(e) {
+    return process.env.NODE_ENV === 'production' ? 'Internal error' : e.message;
+}
+
 const runAsUser = (user, cmd, timeoutMs = 2000) => new Promise((resolve) => {
     exec(`sudo -n -u ${shellQuote(user)} -- bash -lc ${shellQuote(cmd)}`, { timeout: timeoutMs }, (error, stdout, stderr) => {
         if (error && !stdout) return resolve('');
@@ -1138,6 +1164,7 @@ const discoverAgents = async () => {
             inflightAgentScan = null;
         }
     })();
+    inflightAgentScan.catch(err => console.error('[agent-discovery]', err && err.message));
     return inflightAgentScan;
 };
 
@@ -1162,7 +1189,7 @@ app.get('/api/samba/status', async (req, res) => {
 });
 
 app.post('/api/samba/status', async (req, res) => {
-    const { action } = req.body;
+    const { action } = req.body || {};
     try {
         await samba.controlService(action);
         res.json({ ok: true });
@@ -1181,7 +1208,7 @@ app.get('/api/samba/shares', async (req, res) => {
 });
 
 app.post('/api/samba/shares', async (req, res) => {
-    const { name } = req.body;
+    const { name } = req.body || {};
     try {
         const result = await samba.saveShare(name, req.body);
         res.json(result);
@@ -1210,7 +1237,7 @@ app.get('/api/samba/global', async (req, res) => {
 });
 
 app.post('/api/samba/global', async (req, res) => {
-    const { workgroup, serverString, mapToGuest } = req.body;
+    const { workgroup, serverString, mapToGuest } = req.body || {};
     try {
         const result = await samba.saveGlobalSettings({ workgroup, serverString, mapToGuest });
         res.json(result);
@@ -1229,7 +1256,7 @@ app.get('/api/samba/users', async (req, res) => {
 });
 
 app.post('/api/samba/users', async (req, res) => {
-    const { username, password, createSystemUser } = req.body;
+    const { username, password, createSystemUser } = req.body || {};
     try {
         const result = await samba.saveUser(username, password, createSystemUser);
         res.json(result);
@@ -1258,7 +1285,7 @@ app.get('/api/samba/connections', async (req, res) => {
 });
 
 app.post('/api/samba/permissions', async (req, res) => {
-    const { path: dirPath, owner, mode } = req.body;
+    const { path: dirPath, owner, mode } = req.body || {};
     try {
         const result = await samba.fixPermissions(dirPath, owner, mode);
         res.json(result);
@@ -1288,7 +1315,7 @@ app.get('/api/samba/browse', async (req, res) => {
 
 // Power Controls Endpoint
 app.post('/api/power', (req, res) => {
-    const { action } = req.body;
+    const { action } = req.body || {};
     if (!['reboot', 'shutdown', 'sleep', 'logoff'].includes(action)) {
         return res.status(400).json({ error: 'Invalid power action' });
     }
@@ -1362,7 +1389,7 @@ app.post('/api/updates/check', async (req, res) => {
 });
 
 app.post('/api/updates/apply', (req, res) => {
-    const { packages } = req.body;
+    const { packages } = req.body || {};
     if (!packages || !Array.isArray(packages) || packages.length === 0) {
         return res.status(400).json({ error: 'Packages must be a non-empty array' });
     }
@@ -1401,7 +1428,7 @@ app.get('/api/ssh/keys', async (req, res) => {
                 const pubPath = path.join(sshDir, file);
                 try {
                     const pubContent = fs.readFileSync(pubPath, 'utf8').trim();
-                    const keygenOut = await runCommand(`ssh-keygen -l -f ${JSON.stringify(pubPath)}`);
+                    const keygenOut = await runCommand(`ssh-keygen -l -f ${shellQuote(pubPath)}`);
                     if (keygenOut) {
                         const parts = keygenOut.trim().split(/\s+/);
                         const bits = parts[0];
@@ -1436,36 +1463,47 @@ app.get('/api/ssh/keys', async (req, res) => {
 });
 
 app.post('/api/ssh/keys/generate', async (req, res) => {
-    const { name, type, bits, comment, passphrase } = req.body;
-    if (!name) return res.status(400).json({ error: 'Key name is required' });
-    
-    const cleanName = name.replace(/[^a-zA-Z0-9_-]/g, '');
-    const keyType = ['ED25519', 'RSA', 'ECDSA'].includes(type) ? type.toLowerCase() : 'ed25519';
+    const { name, type, bits, comment, passphrase } = req.body || {};
+    if (typeof name !== 'string' || !/^[A-Za-z0-9_.-]+$/.test(name)) {
+        return res.status(400).json({ error: 'Invalid key name' });
+    }
+    const keyType = ['rsa', 'ed25519', 'ecdsa'].includes(typeof type === 'string' ? type.toLowerCase() : '')
+        ? type.toLowerCase()
+        : 'ed25519';
     const bitsVal = parseInt(bits, 10) || 2048;
-    const commentVal = comment ? comment.slice(0, 100) : 'hosted-dashboard-key';
-    const passVal = passphrase ? passphrase : '';
-    
-    const keyPath = `/home/ayman/.ssh/${cleanName}`;
-    
+    const commentVal = typeof comment === 'string' ? comment.slice(0, 100) : 'hosted-dashboard-key';
+    const passVal = typeof passphrase === 'string' ? passphrase : '';
+
+    const keyPath = `/home/ayman/.ssh/${name}`;
+
     try {
         if (fs.existsSync(keyPath)) {
             return res.status(400).json({ error: 'Key file already exists' });
         }
-        
-        let cmd = `sudo -u ayman ssh-keygen -t ${keyType} -C ${JSON.stringify(commentVal)} -N ${JSON.stringify(passVal)} -f ${JSON.stringify(keyPath)}`;
+
+        const args = ['-n', '-u', 'ayman', '--', 'ssh-keygen',
+            '-t', keyType,
+            '-C', commentVal,
+            '-N', passVal,
+            '-f', keyPath];
         if (keyType === 'rsa' || keyType === 'ecdsa') {
-            cmd += ` -b ${bitsVal}`;
+            args.push('-b', String(bitsVal));
         }
-        
-        await runCommand(cmd);
-        res.json({ ok: true, name: cleanName });
+
+        await new Promise((resolve, reject) => {
+            execFile('sudo', args, { timeout: 15000 }, (error, stdout, stderr) => {
+                if (error) return reject(error);
+                resolve(stdout);
+            });
+        });
+        res.json({ ok: true, name });
     } catch (e) {
-        res.status(500).json({ error: e.message });
+        res.status(500).json({ error: errMsg(e) });
     }
 });
 
 app.post('/api/ssh/keys/deploy', async (req, res) => {
-    const { keyId, host, port, username, password } = req.body;
+    const { keyId, host, port, username, password } = req.body || {};
     if (!keyId || !host || !username) {
         return res.status(400).json({ error: 'keyId, host, and username are required' });
     }
@@ -1481,7 +1519,7 @@ app.post('/api/ssh/keys/deploy', async (req, res) => {
         const conn = new Client();
         
         conn.on('ready', () => {
-            const cmd = `mkdir -p ~/.ssh && chmod 700 ~/.ssh && echo ${JSON.stringify(pubKeyContent)} >> ~/.ssh/authorized_keys && chmod 600 ~/.ssh/authorized_keys`;
+            const cmd = `mkdir -p ~/.ssh && chmod 700 ~/.ssh && echo ${shellQuote(pubKeyContent)} >> ~/.ssh/authorized_keys && chmod 600 ~/.ssh/authorized_keys`;
             conn.exec(cmd, (err, stream) => {
                 if (err) {
                     conn.end();
@@ -1549,8 +1587,9 @@ app.delete('/api/samba/connections/:pid', async (req, res) => {
 });
 
 app.get('/api/files/view', (req, res) => {
-    const filePath = req.query.path;
-    if (!filePath) return res.status(400).json({ error: 'Missing path' });
+    let filePath;
+    try { filePath = safeFilePath(req.query.path); }
+    catch (e) { return res.status(e.status || 400).json({ error: e.message }); }
     try {
         if (!fs.existsSync(filePath)) {
             return res.status(404).json({ error: 'File not found' });
@@ -1576,8 +1615,10 @@ app.get('/api/files/view', (req, res) => {
 });
 
 app.post('/api/files/save', (req, res) => {
-    const { path: filePath, content } = req.body;
-    if (!filePath) return res.status(400).json({ error: 'Missing path' });
+    const { path: rawPath, content } = req.body || {};
+    let filePath;
+    try { filePath = safeFilePath(rawPath); }
+    catch (e) { return res.status(e.status || 400).json({ error: e.message }); }
     try {
         fs.writeFileSync(filePath, content, 'utf8');
         res.json({ ok: true });
@@ -1624,7 +1665,7 @@ app.get('/api/systemd/units', async (req, res) => {
 });
 
 app.post('/api/systemd/control', async (req, res) => {
-    const { unit, action } = req.body;
+    const { unit, action } = req.body || {};
     if (!unit || !['start', 'stop', 'restart', 'enable', 'disable', 'reload'].includes(action)) {
         return res.status(400).json({ error: 'Invalid unit or action' });
     }
@@ -1688,7 +1729,7 @@ app.get('/api/processes', async (req, res) => {
 app.post('/api/processes/:pid/signal', async (req, res) => {
     const pid = parseInt(req.params.pid, 10);
     if (!pid || pid <= 1 || isNaN(pid)) return res.status(400).json({ error: 'Invalid PID' });
-    const { signal } = req.body;
+    const { signal } = req.body || {};
     const sigMap = { SIGTERM: '15', SIGKILL: '9', SIGHUP: '1' };
     const sig = sigMap[signal];
     if (!sig) return res.status(400).json({ error: 'Invalid signal. Use SIGTERM, SIGKILL, or SIGHUP' });
@@ -1743,12 +1784,12 @@ app.get('/api/docker/images', async (req, res) => {
 });
 
 app.post('/api/docker/images/pull', async (req, res) => {
-    const { image } = req.body;
+    const { image } = req.body || {};
     if (!image || !/^[a-zA-Z0-9][a-zA-Z0-9_.+\-/:@]*$/.test(image)) {
         return res.status(400).json({ error: 'Invalid image name' });
     }
     try {
-        const out = await runCommandThrow(`docker pull ${JSON.stringify(image)} 2>&1`);
+        const out = await runCommandThrow(`docker pull ${shellQuote(image)} 2>&1`);
         res.json({ ok: true, output: out });
     } catch (e) {
         res.status(500).json({ error: e.message });
@@ -1761,7 +1802,7 @@ app.delete('/api/docker/images/:id', async (req, res) => {
         return res.status(400).json({ error: 'Invalid image id' });
     }
     try {
-        await runCommandThrow(`docker rmi ${JSON.stringify(id)} 2>&1`);
+        await runCommandThrow(`docker rmi ${shellQuote(id)} 2>&1`);
         res.json({ ok: true });
     } catch (e) {
         res.status(500).json({ error: e.message });
@@ -1774,6 +1815,524 @@ app.post('/api/docker/images/prune', async (req, res) => {
         res.json({ ok: true, output: out });
     } catch (e) {
         res.status(500).json({ error: e.message });
+    }
+});
+
+// ─── Docker Compose Stacks ────────────────────────────────────────────────────
+const COMPOSE_SCAN_DIRS = (process.env.COMPOSE_SCAN_DIRS || '/opt/stacks:/srv/stacks:/etc/docker/compose')
+    .split(':').map(s => s.trim()).filter(Boolean).map(s => path.resolve(s));
+const COMPOSE_FILENAMES = ['compose.yaml', 'compose.yml', 'docker-compose.yaml', 'docker-compose.yml'];
+const RE_COMPOSE_PROJECT = /^[a-z0-9][a-z0-9_-]{0,62}$/i;
+
+function assertProject(name) {
+    if (typeof name !== 'string' || !RE_COMPOSE_PROJECT.test(name)) {
+        throw Object.assign(new Error('Invalid project name'), { status: 400 });
+    }
+}
+
+function findComposeFileForProject(project) {
+    for (const dir of COMPOSE_SCAN_DIRS) {
+        const stackDir = path.join(dir, project);
+        try {
+            if (!fs.statSync(stackDir).isDirectory()) continue;
+        } catch { continue; }
+        for (const fname of COMPOSE_FILENAMES) {
+            const file = path.join(stackDir, fname);
+            try {
+                if (!fs.statSync(file).isFile()) continue;
+            } catch { continue; }
+            const abs = path.resolve(file);
+            if (!COMPOSE_SCAN_DIRS.some(d => abs === d || abs.startsWith(d + path.sep))) continue;
+            return { dir: stackDir, file: abs };
+        }
+    }
+    return null;
+}
+
+function scanFilesystemForStacks() {
+    const stacks = [];
+    for (const root of COMPOSE_SCAN_DIRS) {
+        let entries;
+        try { entries = fs.readdirSync(root, { withFileTypes: true }); }
+        catch { continue; }
+        for (const entry of entries) {
+            if (!entry.isDirectory() || !RE_COMPOSE_PROJECT.test(entry.name)) continue;
+            const dir = path.join(root, entry.name);
+            for (const fname of COMPOSE_FILENAMES) {
+                const file = path.join(dir, fname);
+                try {
+                    if (fs.statSync(file).isFile()) {
+                        stacks.push({ name: entry.name, dir, file });
+                        break;
+                    }
+                } catch {}
+            }
+        }
+    }
+    return stacks;
+}
+
+const runComposeCmd = (args, timeoutMs = 30000) => new Promise((resolve) => {
+    execFile('docker', args, { timeout: timeoutMs, maxBuffer: 16 * 1024 * 1024 }, (error, stdout, stderr) => {
+        resolve({ ok: !error, stdout: stdout || '', stderr: stderr || (error ? error.message : '') });
+    });
+});
+
+app.get('/api/compose/stacks', async (req, res) => {
+    try {
+        const lsRes = await runComposeCmd(['compose', 'ls', '-a', '--format', 'json']);
+        const running = {};
+        if (lsRes.ok && lsRes.stdout.trim()) {
+            try {
+                const parsed = JSON.parse(lsRes.stdout);
+                if (Array.isArray(parsed)) {
+                    for (const s of parsed) {
+                        if (s.Name) running[s.Name] = s;
+                    }
+                }
+            } catch {}
+        }
+        const fsStacks = scanFilesystemForStacks();
+        const seen = new Set();
+        const stacks = [];
+        for (const s of fsStacks) {
+            seen.add(s.name);
+            const r = running[s.name];
+            stacks.push({
+                name: s.name,
+                dir: s.dir,
+                file: s.file,
+                status: r?.Status || 'down',
+                source: 'filesystem'
+            });
+        }
+        for (const name of Object.keys(running)) {
+            if (seen.has(name)) continue;
+            stacks.push({
+                name,
+                dir: null,
+                file: running[name].ConfigFiles || null,
+                status: running[name].Status || 'unknown',
+                source: 'docker'
+            });
+        }
+        stacks.sort((a, b) => a.name.localeCompare(b.name));
+        res.json({ stacks, scanDirs: COMPOSE_SCAN_DIRS });
+    } catch (e) {
+        res.status(500).json({ error: errMsg(e) });
+    }
+});
+
+app.get('/api/compose/stacks/:project', async (req, res) => {
+    try {
+        assertProject(req.params.project);
+        const project = req.params.project;
+        const found = findComposeFileForProject(project);
+        const psArgs = ['compose', '-p', project];
+        if (found) psArgs.push('-f', found.file);
+        psArgs.push('ps', '-a', '--format', 'json');
+        const psRes = await runComposeCmd(psArgs);
+        const services = [];
+        if (psRes.ok && psRes.stdout.trim()) {
+            for (const line of psRes.stdout.trim().split('\n')) {
+                try {
+                    const obj = JSON.parse(line);
+                    services.push({
+                        name: obj.Service || obj.Name,
+                        container: obj.Name,
+                        image: obj.Image,
+                        state: obj.State,
+                        status: obj.Status,
+                        ports: Array.isArray(obj.Publishers) ? obj.Publishers.filter(p => p.PublishedPort).map(p => `${p.PublishedPort}:${p.TargetPort}/${p.Protocol}`).join(', ') : ''
+                    });
+                } catch {}
+            }
+        }
+        res.json({
+            name: project,
+            dir: found?.dir || null,
+            file: found?.file || null,
+            services
+        });
+    } catch (e) {
+        res.status(e.status || 500).json({ error: errMsg(e) });
+    }
+});
+
+app.get('/api/compose/stacks/:project/file', async (req, res) => {
+    try {
+        assertProject(req.params.project);
+        const found = findComposeFileForProject(req.params.project);
+        if (!found) return res.status(404).json({ error: 'Compose file not found' });
+        const stat = fs.statSync(found.file);
+        if (stat.size > 1024 * 1024) return res.status(413).json({ error: 'Compose file too large' });
+        const content = fs.readFileSync(found.file, 'utf8');
+        res.json({ path: found.file, content });
+    } catch (e) {
+        res.status(e.status || 500).json({ error: errMsg(e) });
+    }
+});
+
+app.post('/api/compose/stacks/:project/file', async (req, res) => {
+    try {
+        assertProject(req.params.project);
+        const { content } = req.body || {};
+        if (typeof content !== 'string') return res.status(400).json({ error: 'Missing content' });
+        if (content.length > 1024 * 1024) return res.status(413).json({ error: 'Content too large' });
+        const found = findComposeFileForProject(req.params.project);
+        if (!found) return res.status(404).json({ error: 'Compose file not found' });
+        const tmp = found.file + '.tmp.' + process.pid;
+        fs.writeFileSync(tmp, content, { mode: 0o644 });
+        fs.renameSync(tmp, found.file);
+        res.json({ ok: true });
+    } catch (e) {
+        res.status(e.status || 500).json({ error: errMsg(e) });
+    }
+});
+
+app.get('/api/compose/stacks/:project/logs', async (req, res) => {
+    try {
+        assertProject(req.params.project);
+        const tail = Math.min(2000, Math.max(50, parseInt(req.query.tail, 10) || 200));
+        const found = findComposeFileForProject(req.params.project);
+        const args = ['compose', '-p', req.params.project];
+        if (found) args.push('-f', found.file);
+        args.push('logs', '--no-color', '--tail', String(tail));
+        const out = await runComposeCmd(args, 30000);
+        res.json({ logs: (out.stdout || '') + (out.stderr || '') });
+    } catch (e) {
+        res.status(e.status || 500).json({ error: errMsg(e) });
+    }
+});
+
+app.post('/api/compose/stacks/:project/action', async (req, res) => {
+    try {
+        assertProject(req.params.project);
+        const { action } = req.body || {};
+        const allowed = new Set(['up', 'down', 'restart', 'pull', 'stop', 'start']);
+        if (!allowed.has(action)) return res.status(400).json({ error: 'Invalid action' });
+        const found = findComposeFileForProject(req.params.project);
+        if (!found && action !== 'down' && action !== 'stop') {
+            return res.status(404).json({ error: 'Compose file not found' });
+        }
+        const args = ['compose', '-p', req.params.project];
+        if (found) args.push('-f', found.file);
+        args.push(action);
+        if (action === 'up') args.push('-d', '--remove-orphans');
+        if (action === 'down') args.push('--remove-orphans');
+        const out = await runComposeCmd(args, 10 * 60 * 1000);
+        if (!out.ok) {
+            return res.status(500).json({ error: (out.stderr || 'Command failed').slice(0, 4000) });
+        }
+        res.json({ ok: true, output: ((out.stdout || '') + (out.stderr || '')).slice(0, 8000) });
+    } catch (e) {
+        res.status(e.status || 500).json({ error: errMsg(e) });
+    }
+});
+
+// ─── File Search / Archive / Trash / Signed Links / Workspaces ────────────────
+const RE_SEARCH_TERM = /^[A-Za-z0-9._ \-+@*?]{1,80}$/;
+
+app.get('/api/files/search', async (req, res) => {
+    try {
+        const root = safeFilePath(req.query.path || '/');
+        const q = String(req.query.q || '').trim();
+        if (!q || !RE_SEARCH_TERM.test(q)) return res.status(400).json({ error: 'Invalid query' });
+        const max = Math.min(500, Math.max(1, parseInt(req.query.max, 10) || 200));
+        const pattern = q.includes('*') || q.includes('?') ? q : `*${q}*`;
+        execFile('find', [root, '-maxdepth', '8', '-iname', pattern, '-not', '-path', '*/node_modules/*', '-not', '-path', '*/.git/*'],
+            { timeout: 15000, maxBuffer: 4 * 1024 * 1024 }, (err, stdout) => {
+                const lines = (stdout || '').split('\n').filter(Boolean).slice(0, max);
+                const matches = lines.map((line) => {
+                    try {
+                        const st = fs.statSync(line);
+                        return { path: line, name: path.basename(line), isDir: st.isDirectory() };
+                    } catch { return { path: line, name: path.basename(line), isDir: false }; }
+                });
+                res.json({ matches });
+            });
+    } catch (e) {
+        res.status(e.status || 500).json({ error: errMsg(e) });
+    }
+});
+
+app.post('/api/files/archive', async (req, res) => {
+    try {
+        const { action, paths, target } = req.body || {};
+        if (!['compress', 'extract'].includes(action)) return res.status(400).json({ error: 'Invalid action' });
+        if (!Array.isArray(paths) || paths.length === 0) return res.status(400).json({ error: 'Missing paths' });
+        const safePaths = paths.map(p => safeFilePath(p));
+        const safeTarget = target ? safeFilePath(target) : null;
+        if (action === 'compress') {
+            if (!safeTarget) return res.status(400).json({ error: 'Missing target' });
+            const ext = safeTarget.toLowerCase();
+            const dirOfFirst = path.dirname(safePaths[0]);
+            const relPaths = safePaths.map(p => path.relative(dirOfFirst, p) || path.basename(p));
+            let cmd, args;
+            if (ext.endsWith('.zip')) { cmd = 'zip'; args = ['-r', safeTarget, ...relPaths]; }
+            else if (ext.endsWith('.tar.gz') || ext.endsWith('.tgz')) { cmd = 'tar'; args = ['-czf', safeTarget, ...relPaths]; }
+            else if (ext.endsWith('.tar.bz2') || ext.endsWith('.tbz2')) { cmd = 'tar'; args = ['-cjf', safeTarget, ...relPaths]; }
+            else return res.status(400).json({ error: 'Unsupported archive format' });
+            for (const p of safePaths) {
+                try { if (fs.statSync(p).size > 2 * 1024 * 1024 * 1024) return res.status(413).json({ error: 'Source too large' }); } catch {}
+            }
+            execFile(cmd, args, { cwd: dirOfFirst, timeout: 10 * 60 * 1000, maxBuffer: 16 * 1024 * 1024 }, (err, stdout, stderr) => {
+                if (err) return res.status(500).json({ error: (stderr || err.message).slice(0, 4000) });
+                res.json({ ok: true, output: ((stdout || '') + (stderr || '')).slice(0, 8000), target: safeTarget });
+            });
+        } else {
+            if (safePaths.length !== 1) return res.status(400).json({ error: 'Extract needs exactly one source' });
+            if (!safeTarget) return res.status(400).json({ error: 'Missing target' });
+            try { fs.mkdirSync(safeTarget, { recursive: true }); } catch {}
+            const src = safePaths[0].toLowerCase();
+            let cmd, args;
+            if (src.endsWith('.zip')) { cmd = 'unzip'; args = ['-o', safePaths[0], '-d', safeTarget]; }
+            else if (src.endsWith('.tar.gz') || src.endsWith('.tgz')) { cmd = 'tar'; args = ['-xzf', safePaths[0], '-C', safeTarget]; }
+            else if (src.endsWith('.tar.bz2') || src.endsWith('.tbz2')) { cmd = 'tar'; args = ['-xjf', safePaths[0], '-C', safeTarget]; }
+            else if (src.endsWith('.tar')) { cmd = 'tar'; args = ['-xf', safePaths[0], '-C', safeTarget]; }
+            else return res.status(400).json({ error: 'Unsupported archive format' });
+            execFile(cmd, args, { timeout: 10 * 60 * 1000, maxBuffer: 16 * 1024 * 1024 }, (err, stdout, stderr) => {
+                if (err) return res.status(500).json({ error: (stderr || err.message).slice(0, 4000) });
+                res.json({ ok: true, output: ((stdout || '') + (stderr || '')).slice(0, 8000), target: safeTarget });
+            });
+        }
+    } catch (e) {
+        res.status(e.status || 500).json({ error: errMsg(e) });
+    }
+});
+
+function ensureTrashDir() {
+    try { fs.mkdirSync(TRASH_DIR, { recursive: true, mode: 0o700 }); } catch {}
+}
+
+app.post('/api/files/trash', (req, res) => {
+    try {
+        ensureTrashDir();
+        const { path: p, paths } = req.body || {};
+        const list = Array.isArray(paths) ? paths : (p ? [p] : []);
+        if (list.length === 0) return res.status(400).json({ error: 'Missing path(s)' });
+        const results = [];
+        for (const item of list) {
+            const safe = safeFilePath(item);
+            const rand = crypto.randomBytes(4).toString('hex');
+            const id = `${Date.now()}-${rand}-${path.basename(safe).replace(/[^A-Za-z0-9._\- ]/g, '_').slice(0, 200)}`;
+            const dest = path.join(TRASH_DIR, id);
+            const metaPath = dest + '.meta.json';
+            try {
+                const stat = fs.statSync(safe);
+                fs.renameSync(safe, dest);
+                fs.writeFileSync(metaPath, JSON.stringify({
+                    id, originalPath: safe, deletedAt: Date.now(),
+                    sizeBytes: stat.size, isDir: stat.isDirectory(),
+                    mode: stat.mode, mtimeMs: stat.mtimeMs,
+                }), { mode: 0o600 });
+                results.push({ id, originalPath: safe });
+            } catch (e) {
+                results.push({ originalPath: safe, error: e.message });
+            }
+        }
+        res.json({ ok: true, trashed: results });
+    } catch (e) {
+        res.status(e.status || 500).json({ error: errMsg(e) });
+    }
+});
+
+app.get('/api/files/trash', (req, res) => {
+    try {
+        ensureTrashDir();
+        const entries = fs.readdirSync(TRASH_DIR)
+            .filter(name => name.endsWith('.meta.json'))
+            .map(name => {
+                try {
+                    const meta = JSON.parse(fs.readFileSync(path.join(TRASH_DIR, name), 'utf8'));
+                    return meta;
+                } catch { return null; }
+            })
+            .filter(Boolean)
+            .sort((a, b) => (b.deletedAt || 0) - (a.deletedAt || 0))
+            .slice(0, 500);
+        res.json({ entries });
+    } catch (e) {
+        res.status(500).json({ error: errMsg(e) });
+    }
+});
+
+app.post('/api/files/restore', (req, res) => {
+    try {
+        const { id } = req.body || {};
+        if (typeof id !== 'string' || !/^[0-9]+-[a-f0-9]{8}-[A-Za-z0-9._\- ]{1,255}$/.test(id)) {
+            return res.status(400).json({ error: 'Invalid id' });
+        }
+        const dest = path.join(TRASH_DIR, id);
+        const metaPath = dest + '.meta.json';
+        if (!fs.existsSync(dest) || !fs.existsSync(metaPath)) return res.status(404).json({ error: 'Not found' });
+        const meta = JSON.parse(fs.readFileSync(metaPath, 'utf8'));
+        const target = safeFilePath(meta.originalPath);
+        if (fs.existsSync(target)) return res.status(409).json({ error: 'Destination exists' });
+        fs.renameSync(dest, target);
+        try { fs.unlinkSync(metaPath); } catch {}
+        res.json({ ok: true, restoredTo: target });
+    } catch (e) {
+        res.status(e.status || 500).json({ error: errMsg(e) });
+    }
+});
+
+function b64url(buf) {
+    return Buffer.from(buf).toString('base64').replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+}
+function b64urlDecode(s) {
+    s = String(s).replace(/-/g, '+').replace(/_/g, '/');
+    while (s.length % 4) s += '=';
+    return Buffer.from(s, 'base64').toString('utf8');
+}
+
+app.post('/api/files/sign', (req, res) => {
+    try {
+        const { path: p, ttl } = req.body || {};
+        const safe = safeFilePath(p);
+        if (!fs.statSync(safe).isFile()) return res.status(400).json({ error: 'Not a regular file' });
+        const ttlSec = Math.min(86400, Math.max(60, parseInt(ttl, 10) || 3600));
+        const expiresAt = Math.floor(Date.now() / 1000) + ttlSec;
+        const sig = crypto.createHmac('sha256', SIGN_SECRET).update(`${safe}|${expiresAt}`).digest('base64').replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '').slice(0, 24);
+        const token = `${expiresAt}.${b64url(safe)}.${sig}`;
+        res.json({ url: `/d/${token}`, expiresAt });
+    } catch (e) {
+        res.status(e.status || 500).json({ error: errMsg(e) });
+    }
+});
+
+app.get('/d/:token', (req, res) => {
+    try {
+        const parts = String(req.params.token).split('.');
+        if (parts.length !== 3) return res.status(404).end();
+        const expiresAt = parseInt(parts[0], 10);
+        if (!Number.isFinite(expiresAt) || Date.now() / 1000 > expiresAt) return res.status(410).json({ error: 'Link expired' });
+        let filePath;
+        try { filePath = b64urlDecode(parts[1]); } catch { return res.status(404).end(); }
+        const expected = crypto.createHmac('sha256', SIGN_SECRET).update(`${filePath}|${expiresAt}`).digest('base64').replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '').slice(0, 24);
+        if (!timingSafeCompare(parts[2], expected)) return res.status(404).end();
+        const safe = safeFilePath(filePath);
+        if (!fs.statSync(safe).isFile()) return res.status(404).end();
+        res.download(safe);
+    } catch (e) {
+        res.status(404).end();
+    }
+});
+
+// ─── Workspaces (Web IDE) ──────────────────────────────────────────────────────
+const RE_WORKSPACE_NAME = /^[A-Za-z0-9_. \-]{1,64}$/;
+const RE_ENV_KEY = /^[A-Z_][A-Z0-9_]{0,63}$/;
+
+function ensureWorkspacesFile() {
+    try { fs.mkdirSync(path.dirname(WORKSPACES_FILE), { recursive: true }); } catch {}
+    if (!fs.existsSync(WORKSPACES_FILE)) {
+        fs.writeFileSync(WORKSPACES_FILE, JSON.stringify({ workspaces: [] }, null, 2), { mode: 0o600 });
+    }
+}
+function loadWorkspaces() {
+    ensureWorkspacesFile();
+    try {
+        const data = JSON.parse(fs.readFileSync(WORKSPACES_FILE, 'utf8'));
+        return Array.isArray(data.workspaces) ? data.workspaces : [];
+    } catch { return []; }
+}
+function saveWorkspaces(list) {
+    ensureWorkspacesFile();
+    const tmp = WORKSPACES_FILE + '.tmp.' + process.pid;
+    fs.writeFileSync(tmp, JSON.stringify({ workspaces: list }, null, 2), { mode: 0o600 });
+    fs.renameSync(tmp, WORKSPACES_FILE);
+}
+function validateWorkspacePayload(body, partial = false) {
+    const out = {};
+    if (body.name !== undefined || !partial) {
+        if (typeof body.name !== 'string' || !RE_WORKSPACE_NAME.test(body.name)) throw Object.assign(new Error('Invalid name'), { status: 400 });
+        out.name = body.name;
+    }
+    if (body.cwd !== undefined || !partial) {
+        const safeCwd = safeFilePath(body.cwd);
+        if (!fs.existsSync(safeCwd) || !fs.statSync(safeCwd).isDirectory()) throw Object.assign(new Error('cwd is not a directory'), { status: 400 });
+        out.cwd = safeCwd;
+    }
+    if (body.agent !== undefined) {
+        if (body.agent === null || body.agent === '') out.agent = null;
+        else {
+            const ag = sanitizeAgent(body.agent);
+            out.agent = ag ? ag.id : null;
+        }
+    }
+    if (body.env !== undefined) {
+        if (body.env && typeof body.env === 'object' && !Array.isArray(body.env)) {
+            const clean = {};
+            const keys = Object.keys(body.env).slice(0, 32);
+            for (const k of keys) {
+                if (!RE_ENV_KEY.test(k)) continue;
+                const v = body.env[k];
+                if (typeof v !== 'string' || v.length > 4096) continue;
+                clean[k] = v;
+            }
+            out.env = clean;
+        } else out.env = {};
+    }
+    if (body.openFiles !== undefined) {
+        if (Array.isArray(body.openFiles)) {
+            out.openFiles = body.openFiles.filter(p => typeof p === 'string').slice(0, 64);
+        } else out.openFiles = [];
+    }
+    return out;
+}
+
+app.get('/api/workspaces', (req, res) => {
+    try { res.json({ workspaces: loadWorkspaces() }); }
+    catch (e) { res.status(500).json({ error: errMsg(e) }); }
+});
+
+app.post('/api/workspaces', (req, res) => {
+    try {
+        const patch = validateWorkspacePayload(req.body || {}, false);
+        const list = loadWorkspaces();
+        const ws = {
+            id: crypto.randomBytes(8).toString('hex'),
+            name: patch.name,
+            cwd: patch.cwd,
+            agent: patch.agent ?? null,
+            env: patch.env || {},
+            openFiles: patch.openFiles || [],
+            createdAt: Date.now(),
+            updatedAt: Date.now(),
+        };
+        list.push(ws);
+        saveWorkspaces(list);
+        res.json({ workspace: ws });
+    } catch (e) {
+        res.status(e.status || 500).json({ error: errMsg(e) });
+    }
+});
+
+app.put('/api/workspaces/:id', (req, res) => {
+    try {
+        if (!/^[a-f0-9]{16}$/.test(req.params.id)) return res.status(400).json({ error: 'Invalid id' });
+        const patch = validateWorkspacePayload(req.body || {}, true);
+        const list = loadWorkspaces();
+        const idx = list.findIndex(w => w.id === req.params.id);
+        if (idx === -1) return res.status(404).json({ error: 'Not found' });
+        list[idx] = { ...list[idx], ...patch, updatedAt: Date.now() };
+        saveWorkspaces(list);
+        res.json({ workspace: list[idx] });
+    } catch (e) {
+        res.status(e.status || 500).json({ error: errMsg(e) });
+    }
+});
+
+app.delete('/api/workspaces/:id', (req, res) => {
+    try {
+        if (!/^[a-f0-9]{16}$/.test(req.params.id)) return res.status(400).json({ error: 'Invalid id' });
+        const list = loadWorkspaces();
+        const next = list.filter(w => w.id !== req.params.id);
+        if (next.length === list.length) return res.status(404).json({ error: 'Not found' });
+        saveWorkspaces(next);
+        res.json({ ok: true });
+    } catch (e) {
+        res.status(500).json({ error: errMsg(e) });
     }
 });
 
@@ -1837,6 +2396,7 @@ app.get('/api/logs/stream', async (req, res) => {
     let cmd = 'journalctl -f --output=json';
     if (unit) cmd += ` -u ${shellQuote(unit)}`;
     const proc = exec(cmd + ' 2>/dev/null');
+    proc.stderr?.on('data', () => {});
 
     proc.stdout?.on('data', (chunk) => {
         for (const line of chunk.toString().split('\n').filter(Boolean)) {
@@ -2003,7 +2563,7 @@ app.get('/api/cron', async (req, res) => {
 });
 
 app.post('/api/cron', async (req, res) => {
-    const { schedule, command, user } = req.body;
+    const { schedule, command, user } = req.body || {};
     if (!schedule || !command) return res.status(400).json({ error: 'schedule and command are required' });
     const targetUser = user === 'root' ? 'root' : TARGET_USER;
     try {
@@ -2017,7 +2577,8 @@ app.post('/api/cron', async (req, res) => {
 });
 
 app.post('/api/cron/toggle', async (req, res) => {
-    const { id, active, user } = req.body;
+    const { id, active, user } = req.body || {};
+    if (typeof id !== 'string' || !id) return res.status(400).json({ error: 'Invalid id' });
     const targetUser = user === 'root' ? 'root' : TARGET_USER;
     const idxToToggle = parseInt(id.split('-').pop(), 10);
     if (isNaN(idxToToggle)) return res.status(400).json({ error: 'Invalid id' });
@@ -2052,7 +2613,7 @@ app.post('/api/cron/toggle', async (req, res) => {
 });
 
 app.post('/api/cron/run', async (req, res) => {
-    const { command, user } = req.body;
+    const { command, user } = req.body || {};
     if (!command) return res.status(400).json({ error: 'command is required' });
     const targetUser = user === 'root' ? 'root' : TARGET_USER;
     try {
@@ -2069,7 +2630,8 @@ app.post('/api/cron/run', async (req, res) => {
 });
 
 app.delete('/api/cron/:id', async (req, res) => {
-    const { id } = req.params;
+    const { id } = req.params || {};
+    if (typeof id !== 'string' || !id) return res.status(400).json({ error: 'Invalid id' });
     const user = req.query.user === 'root' ? 'root' : TARGET_USER;
     const idxToDelete = parseInt(id.split('-').pop(), 10);
     if (isNaN(idxToDelete)) return res.status(400).json({ error: 'Invalid id' });
@@ -2202,7 +2764,7 @@ app.get('/api/backups', (req, res) => {
 });
 
 app.post('/api/backups', (req, res) => {
-    const { id, name, src, destType, dest, schedule, active, args } = req.body;
+    const { id, name, src, destType, dest, schedule, active, args } = req.body || {};
     if (!name || !src || !destType || !dest) {
         return res.status(400).json({ error: 'name, src, destType, and dest are required' });
     }
@@ -2332,8 +2894,10 @@ app.get('/api/disk/smart', async (req, res) => {
 
 // ─── File Operations (delete, move, copy, mkdir) ──────────────────────────────
 app.delete('/api/files', (req, res) => {
-    const filePath = req.query.path;
-    if (!filePath || filePath === '/') return res.status(400).json({ error: 'Invalid path' });
+    let filePath;
+    try { filePath = safeFilePath(req.query.path); }
+    catch (e) { return res.status(e.status || 400).json({ error: e.message }); }
+    if (filePath === '/') return res.status(400).json({ error: 'Invalid path' });
     try {
         const stat = fs.statSync(filePath);
         if (stat.isDirectory()) {
@@ -2354,7 +2918,7 @@ app.post('/api/files/upload-chunk', async (req, res) => {
             console.error('[upload-chunk] req.files.chunk is missing!');
             return res.status(400).json({ error: 'No chunk file was uploaded.' });
         }
-        const { dir, fileName, chunkIndex, totalChunks } = req.body;
+        const { dir, fileName, chunkIndex, totalChunks } = req.body || {};
         if (!dir || !fileName || chunkIndex === undefined || totalChunks === undefined) {
             console.error('[upload-chunk] missing parameters:', { dir, fileName, chunkIndex, totalChunks });
             return res.status(400).json({ error: 'Missing parameters.' });
@@ -2363,9 +2927,10 @@ app.post('/api/files/upload-chunk', async (req, res) => {
         const safeFileName = path.basename(fileName);
         const chunkIdx = parseInt(chunkIndex, 10);
         const totalCh = parseInt(totalChunks, 10);
-        
-        // Prevent path traversal in directory
-        const resolvedDir = path.resolve(dir);
+
+        let resolvedDir;
+        try { resolvedDir = safeFilePath(dir); }
+        catch (e) { return res.status(e.status || 400).json({ error: e.message }); }
         
         const tempDir = path.join(__dirname, 'data', 'temp_uploads', safeFileName);
         if (!fs.existsSync(tempDir)) {
@@ -2432,8 +2997,9 @@ app.post('/api/files/upload-chunk', async (req, res) => {
 });
 
 app.get('/api/files/download', (req, res) => {
-    const { path: filePath } = req.query;
-    if (!filePath) return res.status(400).json({ error: 'Missing path' });
+    let filePath;
+    try { filePath = safeFilePath(req.query.path); }
+    catch (e) { return res.status(e.status || 400).json({ error: e.message }); }
     try {
         if (!fs.existsSync(filePath)) {
             return res.status(404).json({ error: 'File not found' });
@@ -2449,10 +3015,12 @@ app.get('/api/files/download', (req, res) => {
 });
 
 app.post('/api/files/move', (req, res) => {
-    const { from, to } = req.body;
-    if (!from || !to) return res.status(400).json({ error: 'Missing from/to' });
+    const { from, to } = req.body || {};
+    let safeFrom, safeTo;
+    try { safeFrom = safeFilePath(from); safeTo = safeFilePath(to); }
+    catch (e) { return res.status(e.status || 400).json({ error: e.message }); }
     try {
-        fs.renameSync(from, to);
+        fs.renameSync(safeFrom, safeTo);
         res.json({ ok: true });
     } catch (e) {
         res.status(500).json({ error: e.message });
@@ -2460,14 +3028,16 @@ app.post('/api/files/move', (req, res) => {
 });
 
 app.post('/api/files/copy', async (req, res) => {
-    const { from, to } = req.body;
-    if (!from || !to) return res.status(400).json({ error: 'Missing from/to' });
+    const { from, to } = req.body || {};
+    let safeFrom, safeTo;
+    try { safeFrom = safeFilePath(from); safeTo = safeFilePath(to); }
+    catch (e) { return res.status(e.status || 400).json({ error: e.message }); }
     try {
-        const stat = fs.statSync(from);
+        const stat = fs.statSync(safeFrom);
         if (stat.isDirectory()) {
-            await runCommandThrow(`cp -a ${shellQuote(from)} ${shellQuote(to)}`);
+            await runCommandThrow(`cp -a ${shellQuote(safeFrom)} ${shellQuote(safeTo)}`);
         } else {
-            fs.copyFileSync(from, to);
+            fs.copyFileSync(safeFrom, safeTo);
         }
         res.json({ ok: true });
     } catch (e) {
@@ -2476,10 +3046,12 @@ app.post('/api/files/copy', async (req, res) => {
 });
 
 app.post('/api/files/mkdir', (req, res) => {
-    const { path: dirPath } = req.body;
-    if (!dirPath) return res.status(400).json({ error: 'Missing path' });
+    const { path: dirPath } = req.body || {};
+    let safeDir;
+    try { safeDir = safeFilePath(dirPath); }
+    catch (e) { return res.status(e.status || 400).json({ error: e.message }); }
     try {
-        fs.mkdirSync(dirPath, { recursive: true });
+        fs.mkdirSync(safeDir, { recursive: true });
         res.json({ ok: true });
     } catch (e) {
         res.status(500).json({ error: e.message });
@@ -2492,7 +3064,7 @@ app.get('/api/alerts/config', (req, res) => {
 });
 
 app.post('/api/alerts/config', (req, res) => {
-    const { cpu, ram, disk } = req.body;
+    const { cpu, ram, disk } = req.body || {};
     state.alerts = {
         cpu: Math.min(100, Math.max(1, parseInt(cpu, 10) || 90)),
         ram: Math.min(100, Math.max(1, parseInt(ram, 10) || 90)),
@@ -2512,7 +3084,7 @@ if (fs.existsSync(frontendPath)) {
 
 const server = http.createServer(app);
 
-const TERMINAL_ALLOW_LAN = process.env.DASHBOARD_TERMINAL_ALLOW_LAN !== 'false';
+const TERMINAL_ALLOW_LAN = process.env.DASHBOARD_TERMINAL_ALLOW_LAN === 'true';
 const wss = new WebSocketServer({ noServer: true });
 
 const isLoopback = (addr) => {
@@ -2540,7 +3112,7 @@ server.on('upgrade', (req, socket, head) => {
     const remote = req.socket.remoteAddress;
     const loopback = isLoopback(remote);
     const sameOrigin = isSameOriginUpgrade(req);
-    const tokenOk = AGENT_TOKEN && parsed.query.key === AGENT_TOKEN;
+    const tokenOk = AGENT_TOKEN && timingSafeCompare(parsed.query.key || '', AGENT_TOKEN);
     const allow = loopback || tokenOk || (TERMINAL_ALLOW_LAN && sameOrigin);
     if (!allow) {
         const reason = !sameOrigin ? 'origin-mismatch' : 'lan-disabled';
@@ -2647,7 +3219,17 @@ wss.on('connection', (ws, req) => {
                 if (privateKey && privateKey.trim()) {
                     let keyContent = privateKey;
                     if (!privateKey.includes('-----BEGIN')) {
-                        const localKeyPath = path.join('/home/ayman/.ssh', privateKey.trim());
+                        const keyName = privateKey.trim();
+                        if (!/^[A-Za-z0-9_.-]+$/.test(keyName)) {
+                            ws.send(JSON.stringify({ type: 'error', message: 'Invalid key name' }));
+                            return;
+                        }
+                        const SSH_DIR = '/home/ayman/.ssh';
+                        const localKeyPath = path.resolve(SSH_DIR, keyName);
+                        if (!localKeyPath.startsWith(SSH_DIR + path.sep)) {
+                            ws.send(JSON.stringify({ type: 'error', message: 'Invalid key name' }));
+                            return;
+                        }
                         if (fs.existsSync(localKeyPath)) {
                             keyContent = fs.readFileSync(localKeyPath, 'utf8');
                         }
@@ -2689,16 +3271,45 @@ wss.on('connection', (ws, req) => {
         }
 
         if (query && query.docker) {
+            if (!/^[a-zA-Z0-9][a-zA-Z0-9_.-]{0,63}$/.test(query.docker)) {
+                ws.close(1008, 'Invalid container');
+                return;
+            }
             command = 'docker';
             args = ['exec', '-it', query.docker, 'sh'];
+        }
+
+        let spawnCwd = '/';
+        if (typeof query.cwd === 'string' && query.cwd) {
+            try {
+                const safe = safeFilePath(query.cwd);
+                if (fs.existsSync(safe) && fs.statSync(safe).isDirectory()) {
+                    spawnCwd = safe;
+                }
+            } catch (e) {}
+        }
+
+        const spawnEnv = {
+            TERM: 'xterm-256color',
+            LANG: process.env.LANG || 'en_US.UTF-8',
+            PATH: process.env.PATH || '/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin',
+            HOME: process.env.HOME || `/home/${TARGET_USER}`,
+        };
+        if (typeof query.env === 'string' && query.env) {
+            const requested = query.env.split(',').map(s => s.trim()).filter(Boolean);
+            for (const name of requested) {
+                if (!/^[A-Z_][A-Z0-9_]{0,63}$/.test(name)) continue;
+                if (!ALLOWED_ENV_PASSTHROUGH.includes(name)) continue;
+                if (process.env[name] != null) spawnEnv[name] = process.env[name];
+            }
         }
 
         term = pty.spawn(command, args, {
             name: 'xterm-256color',
             cols,
             rows,
-            env: { TERM: 'xterm-256color', LANG: process.env.LANG || 'en_US.UTF-8' },
-            cwd: '/',
+            env: spawnEnv,
+            cwd: spawnCwd,
         });
 
         if (agent) {

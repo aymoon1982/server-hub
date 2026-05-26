@@ -148,12 +148,12 @@ function Overview({ onNav }) {
 
   const toggleWidget = (index) => {
     const newLayout = [...layout];
-    newLayout[index].visible = !newLayout[index].visible;
+    newLayout[index] = { ...newLayout[index], visible: !newLayout[index].visible };
     saveLayout(newLayout);
   };
 
   const resetLayout = () => {
-    saveLayout(DEFAULT_LAYOUT);
+    saveLayout(DEFAULT_LAYOUT.map(w => ({ ...w })));
   };
 
   const [cpuHistory, setCpuHistory] = useState(() => Array.from({length: 24}, () => 10 + Math.floor(Math.random() * 20)));
@@ -161,10 +161,14 @@ function Overview({ onNav }) {
   const [rxHistory, setRxHistory] = useState(() => Array.from({length: 24}, () => 0));
   const [txHistory, setTxHistory] = useState(() => Array.from({length: 24}, () => 0));
 
+  const mountedRef = useRef(true);
+  useEffect(() => () => { mountedRef.current = false; }, []);
+
   useEffect(() => {
     const fetchStats = async () => {
       try {
         const res = await axios.get('/api/stats');
+        if (!mountedRef.current) return;
         setStats(res.data);
         setCpuHistory(prev => [...prev.slice(1), res.data.cpu]);
         setRamHistory(prev => [...prev.slice(1), res.data.ram]);
@@ -179,6 +183,7 @@ function Overview({ onNav }) {
           axios.get('/api/services'),
           axios.get('/api/samba/shares'),
         ]);
+        if (!mountedRef.current) return;
         setServices(servicesRes.data);
         setShares(sharesRes.data);
         const evts = [];
@@ -197,7 +202,7 @@ function Overview({ onNav }) {
       } catch (e) {}
     };
 
-    axios.get('/api/disk/smart').then(r => setSmart(r.data.disks || [])).catch(() => {});
+    axios.get('/api/disk/smart').then(r => { if (mountedRef.current) setSmart(r.data.disks || []); }).catch(() => {});
 
     fetchStats();
     fetchServices();
@@ -416,8 +421,8 @@ function Overview({ onNav }) {
                   <tr key={p.pid}>
                     <td>{p.pid}</td>
                     <td><b>{p.name}</b></td>
-                    <td><span style={{ color: p.cpu > 50 ? 'var(--err)' : p.cpu > 20 ? 'var(--warn)' : 'var(--text)' }}>{p.cpu.toFixed(1)}%</span></td>
-                    <td>{p.mem.toFixed(1)}%</td>
+                    <td><span style={{ color: p.cpu > 50 ? 'var(--err)' : p.cpu > 20 ? 'var(--warn)' : 'var(--text)' }}>{(p.cpu ?? 0).toFixed(1)}%</span></td>
+                    <td>{(p.mem ?? 0).toFixed(1)}%</td>
                   </tr>
                 ))}
               </tbody>
@@ -536,6 +541,10 @@ function ServicesTab({ kind, cardStyle }) {
     if (!name) return;
     const url = prompt('Service URL (e.g. http://localhost:8080):');
     if (!url) return;
+    if (!/^https?:\/\//.test(url.trim())) {
+      window.UI.toast({ kind: 'err', title: 'Invalid URL', body: 'Must start with http:// or https://' });
+      return;
+    }
     axios.post('/api/services/manual', { name, url })
       .then(() => {
         window.UI.toast({ kind: 'ok', title: 'Service added', body: name });
@@ -653,7 +662,7 @@ function ServicesTiles({ list, kind, onLogs, onRestart, onOpen }) {
       {list.map(s => (
         <div key={s.name} className={`svc-tile ${!s.isRunning ? 'is-stopped' : ''}`}>
           <div className="svc-tile-top">
-            {s.favicon ? <img src={s.favicon} alt="" className="favicon-img" style={{ width: '24px', height: '24px', borderRadius: '4px' }} onError={(e) => { e.target.style.display = 'none'; }} /> : <Favicon ch={s.displayName[0].toUpperCase()} tag={s.type} />}
+            {s.favicon ? <img src={s.favicon} alt="" className="favicon-img" style={{ width: '24px', height: '24px', borderRadius: '4px' }} onError={(e) => { e.target.style.display = 'none'; }} /> : <Favicon ch={(s.displayName || '?')[0].toUpperCase()} tag={s.type} />}
           </div>
           <div className="svc-tile-name" title={s.displayName}>{s.displayName}</div>
           <div className="svc-tile-meta mono">
@@ -691,7 +700,7 @@ function ServicesList({ list, kind, onLogs, onRestart, onStop, onOpen }) {
       </div>
       {list.map(s => (
         <div key={s.name} className={`svc-row ${!s.isRunning ? 'is-stopped' : ''}`}>
-          {s.favicon ? <img src={s.favicon} alt="" style={{ width: '18px', height: '18px', borderRadius: '3px' }} onError={(e) => { e.target.style.display = 'none'; }} /> : <Favicon ch={s.displayName[0].toUpperCase()} tag={s.type} />}
+          {s.favicon ? <img src={s.favicon} alt="" style={{ width: '18px', height: '18px', borderRadius: '3px' }} onError={(e) => { e.target.style.display = 'none'; }} /> : <Favicon ch={(s.displayName || '?')[0].toUpperCase()} tag={s.type} />}
           <div className="svc-row-name">
             <span>{s.displayName}</span>
             <span className="tag mono">{s.type}</span>
@@ -721,7 +730,7 @@ function ServicesPreview({ list, kind, onLogs, onOpen }) {
         <div key={s.name} className="svc-pcard">
           <div className="svc-pcard-thumb">
             <div className="pcard-stripes" />
-            <div className="pcard-glyph">{s.displayName[0].toUpperCase()}</div>
+            <div className="pcard-glyph">{(s.displayName || '?')[0].toUpperCase()}</div>
             <span className={`status-pill st-${s.isRunning ? 'running' : 'stopped'} pcard-status`}><StatusDot status={s.isRunning ? 'running' : 'stopped'} /> {s.isRunning ? 'running' : 'stopped'}</span>
           </div>
           <div className="svc-pcard-body">
@@ -860,8 +869,12 @@ function SambaTab() {
         <div className="samba-actions">
           <button className="btn-ghost" onClick={() => restartSvc('smbd')}>Restart</button>
           <button className="btn-ghost" onClick={async () => {
-            await axios.post('/api/samba/status', { action: 'reload' });
-            window.UI.toast({ kind: 'ok', title: 'Reloaded', body: 'smb.conf re-read.' });
+            try {
+              await axios.post('/api/samba/status', { action: 'reload' });
+              window.UI.toast({ kind: 'ok', title: 'Reloaded', body: 'smb.conf re-read.' });
+            } catch (e) {
+              window.UI.toast({ kind: 'err', title: 'Reload failed', body: e.response?.data?.error || e.message });
+            }
           }}>Reload</button>
           <button className="btn-ghost danger" onClick={() => stopSvc('smbd')}>Stop</button>
         </div>
@@ -1138,11 +1151,13 @@ function SambaUsers() {
 
 function SambaConnections() {
   const [conns, setConns] = useState([]);
+  const mountedRef = useRef(true);
+  useEffect(() => () => { mountedRef.current = false; }, []);
 
   const fetchConnections = async () => {
     try {
       const res = await axios.get('/api/samba/connections');
-      setConns(res.data || []);
+      if (mountedRef.current) setConns(res.data || []);
     } catch (e) {}
   };
 
@@ -1176,7 +1191,7 @@ function SambaConnections() {
         <thead><tr><th>Client</th><th>User</th><th>Share</th><th>PID</th><th>Connected At</th><th></th></tr></thead>
         <tbody>
           {conns.map((c, i) => (
-            <tr key={i}>
+            <tr key={c.pid ? `p-${c.pid}` : `c-${i}`}>
               <td><b>{c.machine || c.client}</b></td>
               <td>{c.username || c.user}</td>
               <td>//{c.service || c.share}</td>
@@ -1273,9 +1288,11 @@ function FileEditorModal({ file, onClose }) {
   const [saving, setSaving] = useState(false);
 
   useEffect(() => {
+    let cancelled = false;
     const load = async () => {
       try {
         const res = await axios.get('/api/files/view', { params: { path: file.path } });
+        if (cancelled) return;
         if (res.data && res.data.isText) {
           setIsText(true);
           setContent(res.data.content);
@@ -1283,13 +1300,15 @@ function FileEditorModal({ file, onClose }) {
           setIsText(false);
         }
       } catch (e) {
+        if (cancelled) return;
         window.UI.toast({ kind: 'err', title: 'Load failed', body: e.message });
         onClose();
       } finally {
-        setLoading(false);
+        if (!cancelled) setLoading(false);
       }
     };
     load();
+    return () => { cancelled = true; };
   }, [file.path, onClose]);
 
   const save = async () => {
@@ -1386,14 +1405,15 @@ const VIDEO_EXTS = new Set(['mp4','webm','ogg','mov','mkv']);
 const AUDIO_EXTS = new Set(['mp3','wav','ogg','m4a','flac','aac']);
 
 function renderMarkdown(raw) {
-  const esc = s => s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+  const esc = s => s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+  const safeHref = (h) => /^(https?:\/\/|mailto:|\/|\.\/|#)/i.test(String(h || '')) ? h : '#';
   const inline = s => s
     .replace(/`([^`]+)`/g, (_,c) => `<code class="md-ic">${c}</code>`)
     .replace(/\*\*\*(.+?)\*\*\*/g,'<strong><em>$1</em></strong>')
     .replace(/\*\*(.+?)\*\*/g,'<strong>$1</strong>')
     .replace(/\*(.+?)\*/g,'<em>$1</em>')
     .replace(/~~(.+?)~~/g,'<del>$1</del>')
-    .replace(/\[([^\]]+)\]\(([^)]+)\)/g,'<a href="$2" target="_blank" rel="noreferrer">$1</a>');
+    .replace(/\[([^\]]+)\]\(([^)]+)\)/g, (_, text, href) => `<a href="${esc(safeHref(href))}" target="_blank" rel="noreferrer">${text}</a>`);
   const lines = raw.split('\n');
   const out = [];
   let i = 0;
@@ -1710,9 +1730,9 @@ function BackupsManagerTab() {
   }, []);
 
   // Poll running jobs if any are active
+  const anyRunning = useMemo(() => jobs.some(j => j.lastStatus === 'running'), [jobs]);
   useEffect(() => {
-    const running = jobs.some(j => j.lastStatus === 'running');
-    if (!running) return;
+    if (!anyRunning) return;
 
     const interval = setInterval(async () => {
       try {
@@ -1721,7 +1741,7 @@ function BackupsManagerTab() {
       } catch (e) {}
     }, 3000);
     return () => clearInterval(interval);
-  }, [jobs]);
+  }, [anyRunning]);
 
   const handleDelete = async (job) => {
     const ok = await window.UI.confirm({
@@ -1919,6 +1939,35 @@ function FilesTab() {
   const [viewMode, setViewMode] = useState('list'); // list, grid
   const [showSidebar, setShowSidebar] = useState(true);
 
+  // Multi-select, drag/drop, search overlay, image preview, rename, path editor, context menu
+  const [multiSelected, setMultiSelected] = useState(() => new Set());
+  const [lastClickIndex, setLastClickIndex] = useState(null);
+  const [dragOver, setDragOver] = useState(false);
+  const [renamingPath, setRenamingPath] = useState(null);
+  const [renameValue, setRenameValue] = useState('');
+  const [pathEditing, setPathEditing] = useState(false);
+  const [pathEditValue, setPathEditValue] = useState('');
+  const [globalSearchQuery, setGlobalSearchQuery] = useState('');
+  const [globalSearchResults, setGlobalSearchResults] = useState(null);
+  const [globalSearchLoading, setGlobalSearchLoading] = useState(false);
+  const [previewOpen, setPreviewOpen] = useState(false);
+  const [previewFile, setPreviewFile] = useState(null);
+  const [ctxMenu, setCtxMenu] = useState(null); // { x, y, item, isDir }
+  const mountedRef = useRef(true);
+  useEffect(() => () => { mountedRef.current = false; }, []);
+  // Close context menu on any outside click
+  useEffect(() => {
+    if (!ctxMenu) return;
+    const close = () => setCtxMenu(null);
+    window.addEventListener('click', close);
+    window.addEventListener('scroll', close, true);
+    return () => {
+      window.removeEventListener('click', close);
+      window.removeEventListener('scroll', close, true);
+    };
+  }, [ctxMenu]);
+  const PREVIEW_IMAGE_EXTS = new Set(['png','jpg','jpeg','gif','webp','svg','bmp']);
+
   const [favorites, setFavorites] = useState(() => {
     const cached = localStorage.getItem('file_favorites');
     if (cached) {
@@ -1952,20 +2001,26 @@ function FilesTab() {
     setLoading(true);
     setViewFile(null);
     setSelected(null);
+    setMultiSelected(new Set());
+    setLastClickIndex(null);
+    setGlobalSearchResults(null);
+    setGlobalSearchQuery('');
+    setRenamingPath(null);
     try {
       const res = await axios.get('/api/samba/browse', { params: { path: p, showHidden: hidden } });
+      if (!mountedRef.current) return;
       setCurrentPath(res.data.currentPath);
       setFolders(res.data.folders || []);
       setFiles(res.data.files || []);
     } catch (e) {
       window.UI.toast({ kind: 'err', title: 'Browse error', body: e.message });
-    } finally { setLoading(false); }
+    } finally { if (mountedRef.current) setLoading(false); }
   };
 
   useEffect(() => { fetchDir(currentPath); }, []);
 
-  const handleUpload = async (e) => {
-    const filesToUpload = Array.from(e.target.files || []);
+  const handleFiles = async (fileList) => {
+    const filesToUpload = Array.from(fileList || []);
     if (filesToUpload.length === 0) return;
 
     const CHUNK_SIZE = 2 * 1024 * 1024; // 2MB chunk
@@ -1986,7 +2041,7 @@ function FilesTab() {
         formData.append('chunkIndex', String(chunkIndex));
         formData.append('totalChunks', String(totalChunks));
 
-        setUploadProgress({
+        if (mountedRef.current) setUploadProgress({
           name: fileName,
           pct: Math.round(((chunkIndex + 0.5) / totalChunks) * 100)
         });
@@ -1997,16 +2052,18 @@ function FilesTab() {
           });
         } catch (err) {
           window.UI.toast({ kind: 'err', title: 'Upload failed', body: err.message });
-          setUploadProgress(null);
+          if (mountedRef.current) setUploadProgress(null);
           return;
         }
       }
-      setUploadProgress({ name: fileName, pct: 100 });
-      setTimeout(() => setUploadProgress(null), 1000);
+      if (mountedRef.current) setUploadProgress({ name: fileName, pct: 100 });
+      setTimeout(() => { if (mountedRef.current) setUploadProgress(null); }, 1000);
     }
     window.UI.toast({ kind: 'ok', title: 'Upload complete', body: `${filesToUpload.length} file(s) uploaded.` });
     fetchDir(currentPath);
   };
+
+  const handleUpload = (e) => handleFiles(e.target.files);
 
   const createFile = async () => {
     const name = prompt('New file name:');
@@ -2109,6 +2166,7 @@ function FilesTab() {
   }, [folders, files]);
 
   const clickTimer = useRef(null);
+  useEffect(() => () => { if (clickTimer.current) clearTimeout(clickTimer.current); }, []);
   const handleRowClick = (item, isDir) => {
     if (clickTimer.current) {
       clearTimeout(clickTimer.current);
@@ -2119,6 +2177,11 @@ function FilesTab() {
       clickTimer.current = setTimeout(() => {
         clickTimer.current = null;
         setSelected(prev => prev === item.name ? null : item.name);
+        if (!isDir && PREVIEW_IMAGE_EXTS.has(fileExt(item.name)) && previewOpen) {
+          setPreviewFile({ ...item, kind: 'image' });
+        } else if (!isDir && fileExt(item.name) === 'pdf' && previewOpen) {
+          setPreviewFile({ ...item, kind: 'pdf' });
+        }
       }, 220);
     }
   };
@@ -2189,6 +2252,175 @@ function FilesTab() {
     } catch (e) {
       window.UI.toast({ kind: 'err', title: 'Failed', body: e.response?.data?.error || e.message });
     }
+  };
+
+  // Combined ordered list of visible rows used to compute shift-click ranges
+  const visibleRows = useMemo(() => {
+    const dirs = filteredFolders.map(f => ({ ...f, isDir: true }));
+    const fls = filteredFiles.map(f => ({ ...f, isDir: false }));
+    return [...dirs, ...fls];
+  }, [filteredFolders, filteredFiles]);
+
+  const toggleRowChecked = (item, idx, ev) => {
+    ev.stopPropagation();
+    setMultiSelected(prev => {
+      const next = new Set(prev);
+      if (ev.shiftKey && lastClickIndex !== null) {
+        const [a, b] = [Math.min(lastClickIndex, idx), Math.max(lastClickIndex, idx)];
+        for (let i = a; i <= b; i++) {
+          const r = visibleRows[i];
+          if (r) next.add(r.path);
+        }
+      } else {
+        if (next.has(item.path)) next.delete(item.path);
+        else next.add(item.path);
+      }
+      return next;
+    });
+    setLastClickIndex(idx);
+  };
+
+  const toggleSelectAllVisible = () => {
+    setMultiSelected(prev => {
+      const all = visibleRows.map(r => r.path);
+      const allChecked = all.length > 0 && all.every(p => prev.has(p));
+      if (allChecked) return new Set();
+      return new Set(all);
+    });
+  };
+
+  const clearMultiSelect = () => { setMultiSelected(new Set()); setLastClickIndex(null); };
+
+  const bulkDelete = async () => {
+    const paths = Array.from(multiSelected);
+    if (paths.length === 0) return;
+    const ok = await window.UI.confirm({
+      title: `Delete ${paths.length} item${paths.length === 1 ? '' : 's'}?`,
+      body: 'This action cannot be undone.',
+      confirmLabel: 'Delete', dangerous: true,
+    });
+    if (!ok) return;
+    let failures = 0;
+    for (const p of paths) {
+      try {
+        await axios.post('/api/files/trash', { path: p });
+      } catch (e) {
+        try { await axios.delete('/api/files', { params: { path: p } }); }
+        catch (e2) { failures++; }
+      }
+    }
+    if (failures === 0) window.UI.toast({ kind: 'ok', title: 'Deleted', body: `${paths.length} item(s)` });
+    else window.UI.toast({ kind: 'warn', title: 'Partial delete', body: `${failures} failed of ${paths.length}` });
+    clearMultiSelect();
+    fetchDir(currentPath);
+  };
+
+  const bulkMoveOrCopy = async (action) => {
+    const paths = Array.from(multiSelected);
+    if (paths.length === 0) return;
+    const dest = prompt(`Destination directory for ${paths.length} item(s):`, currentPath);
+    if (!dest) return;
+    let failures = 0;
+    for (const p of paths) {
+      const base = p.split('/').pop();
+      const to = dest.replace(/\/$/, '') + '/' + base;
+      try {
+        await axios.post(action === 'move' ? '/api/files/move' : '/api/files/copy', { from: p, to });
+      } catch (e) { failures++; }
+    }
+    if (failures === 0) window.UI.toast({ kind: 'ok', title: action === 'move' ? 'Moved' : 'Copied', body: `${paths.length} item(s)` });
+    else window.UI.toast({ kind: 'warn', title: 'Partial ' + action, body: `${failures} failed of ${paths.length}` });
+    clearMultiSelect();
+    fetchDir(currentPath);
+  };
+
+  const bulkCompress = async (download = false) => {
+    const paths = Array.from(multiSelected);
+    if (paths.length === 0) return;
+    let target;
+    if (download) {
+      target = '/tmp/dashboard-zip-' + Math.random().toString(36).slice(2, 10) + '.zip';
+    } else {
+      const ts = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
+      const name = prompt('Archive name:', `archive-${ts}.zip`);
+      if (!name) return;
+      target = currentPath.replace(/\/$/, '') + '/' + name;
+    }
+    try {
+      await axios.post('/api/files/archive', { action: 'compress', paths, target });
+      window.UI.toast({ kind: 'ok', title: 'Archive created', body: target.split('/').pop() });
+      if (download) {
+        const a = document.createElement('a');
+        a.href = `/api/files/download?path=${encodeURIComponent(target)}`;
+        a.style.display = 'none';
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+      } else {
+        fetchDir(currentPath);
+      }
+    } catch (e) {
+      window.UI.toast({ kind: 'err', title: 'Archive failed', body: e.response?.data?.error || e.message });
+    }
+    clearMultiSelect();
+  };
+
+  const startRename = (item) => {
+    setRenamingPath(item.path);
+    setRenameValue(item.name);
+  };
+
+  const commitRename = async (item) => {
+    const newName = renameValue.trim();
+    if (!newName || newName.includes('/')) {
+      window.UI.toast({ kind: 'err', title: 'Invalid name', body: 'Name must be non-empty and contain no "/"' });
+      return;
+    }
+    if (newName === item.name) { setRenamingPath(null); return; }
+    const parent = item.path.replace(/\/[^/]+\/?$/, '') || '/';
+    const to = (parent === '/' ? '' : parent) + '/' + newName;
+    try {
+      await axios.post('/api/files/move', { from: item.path, to });
+      window.UI.toast({ kind: 'ok', title: 'Renamed', body: newName });
+      setRenamingPath(null);
+      fetchDir(currentPath);
+    } catch (e) {
+      window.UI.toast({ kind: 'err', title: 'Rename failed', body: e.response?.data?.error || e.message });
+    }
+  };
+
+  const runGlobalSearch = async () => {
+    const q = globalSearchQuery.trim();
+    if (!q) { setGlobalSearchResults(null); return; }
+    setGlobalSearchLoading(true);
+    try {
+      const res = await axios.get('/api/files/search', { params: { path: currentPath, q, max: 200 } });
+      if (!mountedRef.current) return;
+      setGlobalSearchResults(res.data.results || res.data.items || res.data || []);
+    } catch (e) {
+      window.UI.toast({ kind: 'err', title: 'Search failed', body: e.response?.data?.error || e.message });
+    } finally { if (mountedRef.current) setGlobalSearchLoading(false); }
+  };
+
+  const shareViaSamba = async (item) => {
+    const name = prompt(`Samba share name for "${item.name}":`, item.name);
+    if (!name) return;
+    if (!/^[A-Za-z0-9_.-]{1,64}$/.test(name)) {
+      window.UI.toast({ kind: 'err', title: 'Invalid name', body: 'Use A-Z, 0-9, _ . - (max 64 chars)' });
+      return;
+    }
+    try {
+      await axios.post('/api/samba/shares', { name, path: item.path, writable: true, browsable: true, guestOk: false });
+      window.UI.toast({ kind: 'ok', title: 'Share created', body: name });
+    } catch (e) {
+      window.UI.toast({ kind: 'err', title: 'Share failed', body: e.response?.data?.error || e.message });
+    }
+  };
+
+  const openContextMenu = (e, item, isDir) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setCtxMenu({ x: e.clientX, y: e.clientY, item: { ...item, isDir }, isDir });
   };
 
   return (
@@ -2319,6 +2551,7 @@ function FilesTab() {
         <button type="button" className="btn-ghost sm" onClick={createFile}>+ File</button>
         <button type="button" className="btn-ghost sm" onClick={() => setOp({ type: 'mkdir', value: '' })}>+ Dir</button>
         <button type="button" className="btn-ghost sm" onClick={() => fileInputRef.current?.click()}>+ Upload</button>
+        <button type="button" className="btn-ghost sm" title="Open this folder in the Code workspace" onClick={() => window.dispatchEvent(new CustomEvent('open-workspace', { detail: { cwd: currentPath } }))}>⌘ Open in Code</button>
         <input
           type="file"
           ref={fileInputRef}
@@ -2669,11 +2902,13 @@ function DynamicFileNode({ name, path, activePath, onNavigate, depth }) {
 
   useEffect(() => {
     if (!open) return;
+    let cancelled = false;
     setLoading(true);
     axios.get('/api/samba/browse', { params: { path } })
-      .then(r => setSubdirs(r.data.folders || []))
+      .then(r => { if (!cancelled) setSubdirs(r.data.folders || []); })
       .catch(() => {})
-      .finally(() => setLoading(false));
+      .finally(() => { if (!cancelled) setLoading(false); });
+    return () => { cancelled = true; };
   }, [open, path]);
 
   return (
@@ -2881,7 +3116,9 @@ function SSHServers() {
   useEffect(() => {
     const stored = localStorage.getItem('dashboard_ssh_servers');
     if (stored) {
-      setServers(JSON.parse(stored));
+      let parsed = [];
+      try { parsed = JSON.parse(stored) || []; } catch (e) { parsed = []; }
+      setServers(parsed);
     } else {
       const mock = [
         { id: 's1', label: 'Local Server', host: '127.0.0.1', port: 22, username: 'root', authType: 'password', status: 'idle' },
@@ -3028,7 +3265,7 @@ function ProcessesTab() {
     const label = signal === 'SIGKILL' ? 'Force kill' : 'Terminate';
     const ok = await window.UI.confirm({
       title: `${label} PID ${p.pid}?`,
-      body: `Send ${signal} to "${p.cmd.slice(0, 60)}"`,
+      body: `Send ${signal} to "${(p.cmd || '').slice(0, 60)}"`,
       confirmLabel: label,
       dangerous: true,
     });
@@ -3062,7 +3299,7 @@ function ProcessesTab() {
   const filtered = useMemo(() => {
     if (!q) return procs;
     const lq = q.toLowerCase();
-    return procs.filter(p => p.cmd.toLowerCase().includes(lq) || String(p.pid).includes(q) || p.user.toLowerCase().includes(lq));
+    return procs.filter(p => (p.cmd || '').toLowerCase().includes(lq) || String(p.pid).includes(q) || (p.user || '').toLowerCase().includes(lq));
   }, [procs, q]);
 
   return (
@@ -3338,7 +3575,7 @@ function LogsTab() {
           </thead>
           <tbody>
             {filtered.map((e, i) => (
-              <tr key={i} style={{ borderBottom: '1px solid var(--line-2)' }}>
+              <tr key={e.cursor || (e.ts + '-' + i)} style={{ borderBottom: '1px solid var(--line-2)' }}>
                 <td style={{ padding: '3px 8px', color: 'var(--text-3)', whiteSpace: 'nowrap' }}>{fmtTime(e.ts)}</td>
                 <td style={{ padding: '3px 8px', color: LOG_PRI_COLOR[e.priority] ?? 'var(--text-3)', fontWeight: e.priority < 4 ? 'bold' : 'normal' }}>{LOG_PRI_LABEL[e.priority] ?? '?'}</td>
                 <td style={{ padding: '3px 8px', color: 'var(--text-3)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', maxWidth: '160px' }} title={e.unit}>{e.unit}</td>
@@ -3471,6 +3708,8 @@ function SpeedtestTab() {
   const [stage, setStage] = useState('idle'); // idle, init, download, upload, done, err
   const [stageProgress, setStageProgress] = useState(0); // 0 to 100
   const [errorMsg, setErrorMsg] = useState(null);
+  const timersRef = useRef([]);
+  useEffect(() => () => { timersRef.current.forEach(clearTimeout); timersRef.current = []; }, []);
 
   // Live traffic stats
   const [rxHist, setRxHist] = useState(() => Array.from({ length: 30 }, () => 0));
@@ -3509,6 +3748,7 @@ function SpeedtestTab() {
     const timer1 = setTimeout(() => { setStage('download'); setStageProgress(40); }, 3000);
     const timer2 = setTimeout(() => { setStage('upload'); setStageProgress(70); }, 10000);
     const timer3 = setTimeout(() => { setStage('finish'); setStageProgress(90); }, 17000);
+    timersRef.current.push(timer1, timer2, timer3);
 
     try {
       const res = await axios.post('/api/network/speedtest');

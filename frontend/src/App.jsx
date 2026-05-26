@@ -16,7 +16,8 @@ import {
   SystemTab,
   KBD
 } from './tabs.jsx';
-import { PowerMenu, DockerImagesTab } from './features.jsx';
+import { PowerMenu, DockerImagesTab, StacksTab } from './features.jsx';
+import { CodeWorkspaceTab } from './code-workspace.jsx';
 
 const TABS = [
   { id: 'overview', label: 'Overview', glyph: '◇', section: 'system' },
@@ -24,6 +25,8 @@ const TABS = [
   { id: 'web',      label: 'Web UIs',  glyph: '▦', section: 'services' },
   { id: 'backend',  label: 'Backend',  glyph: '⇆', section: 'services' },
   { id: 'docker',   label: 'Images',   glyph: '◈', section: 'services' },
+  { id: 'code',     label: 'Code',     glyph: '⌘', section: 'shell' },
+  { id: 'stacks',   label: 'Stacks',   glyph: '◰', section: 'services' },
   { id: 'agents',   label: 'Agents',   glyph: '✦', section: 'services' },
   { id: 'samba',    label: 'Samba',    glyph: '◫', section: 'storage' },
   { id: 'files',    label: 'Files',    glyph: '▢', section: 'storage' },
@@ -110,7 +113,7 @@ function Shell() {
 
       const storedSsh = localStorage.getItem('dashboard_ssh_servers');
       if (storedSsh) {
-        setSshCount(JSON.parse(storedSsh).length);
+        try { setSshCount((JSON.parse(storedSsh) || []).length); } catch (e) { setSshCount(0); }
       }
     } catch (e) {}
   };
@@ -177,10 +180,12 @@ function Shell() {
       case 'web':      return <ServicesTab kind="web" cardStyle={t.cardStyle} />;
       case 'backend':  return <ServicesTab kind="backend" cardStyle={t.cardStyle} />;
       case 'docker':   return <DockerImagesTab />;
+      case 'stacks':   return <StacksTab />;
       case 'agents':   return <AgentsTab />;
       case 'samba':    return <SambaTab />;
       case 'files':    return <FilesTab />;
       case 'ssh':      return <SSHTab />;
+      case 'code':     return <CodeWorkspaceTab />;
       default: return null;
     }
   };
@@ -312,7 +317,7 @@ function Shell() {
           <h1>{tabDef?.label}</h1>
           <span className="page-sub">{pageSub(activeTab, hostName, hostUptime, updateCount)}</span>
         </div>
-        {renderTab()}
+        <ErrorBoundary>{renderTab()}</ErrorBoundary>
       </main>
 
       {paletteOpen && (
@@ -390,9 +395,11 @@ function pageSub(tab, hostName, hostUptime, updateCount) {
 function AlertThresholds() {
   const [disk, setDisk] = useState(90);
   const [saving, setSaving] = useState(false);
+  const mountedRef = useRef(true);
+  useEffect(() => () => { mountedRef.current = false; }, []);
 
   useEffect(() => {
-    axios.get('/api/alerts/config').then(r => setDisk(r.data.disk || 90)).catch(() => {});
+    axios.get('/api/alerts/config').then(r => { if (mountedRef.current) setDisk(r.data.disk || 90); }).catch(() => {});
   }, []);
 
   const save = async () => {
@@ -403,7 +410,7 @@ function AlertThresholds() {
         Notification.requestPermission();
       }
     } catch (e) {}
-    setSaving(false);
+    if (mountedRef.current) setSaving(false);
   };
 
   return (
@@ -442,7 +449,9 @@ function CommandPalette({ query, setQuery, onClose, onNavigate, onLaunchTerminal
     axios.get('/api/services').then(res => setServices(res.data)).catch(() => {});
     axios.get('/api/agents').then(res => setAgents(res.data.agents || [])).catch(() => {});
     const storedSsh = localStorage.getItem('dashboard_ssh_servers');
-    if (storedSsh) setSshServers(JSON.parse(storedSsh));
+    if (storedSsh) {
+      try { setSshServers(JSON.parse(storedSsh) || []); } catch (e) { setSshServers([]); }
+    }
 
     return () => window.removeEventListener('keydown', onKey);
   }, [onClose]);
@@ -517,6 +526,18 @@ function CommandPalette({ query, setQuery, onClose, onNavigate, onLaunchTerminal
       </div>
     </div>
   );
+}
+
+class ErrorBoundary extends React.Component {
+  state = { hasError: false };
+  static getDerivedStateFromError() { return { hasError: true }; }
+  componentDidCatch(error, info) { console.error('UI error:', error, info); }
+  render() {
+    if (this.state.hasError) {
+      return <div style={{ padding: 24, color: '#f88' }}>Something went wrong. <button onClick={() => location.reload()}>Reload</button></div>;
+    }
+    return this.props.children;
+  }
 }
 
 // Root: providers + shell

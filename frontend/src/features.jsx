@@ -264,6 +264,10 @@ function ShareBrowser({ share, onClose }) {
   const changePermissions = async (item) => {
     const mode = prompt(`Change permissions mode for "${item.name}" (octal):`, item.perm === '—' ? '0755' : '0755');
     if (!mode) return;
+    if (!/^0?[0-7]{3,4}$/.test(mode.trim())) {
+      window.UI.toast({ kind: 'err', title: 'Invalid mode', body: 'Mode must be an octal value like 0755 or 755.' });
+      return;
+    }
     try {
       await axios.post('/api/samba/permissions', { path: item.path, mode });
       window.UI.toast({ kind: 'ok', title: 'Permissions updated', body: item.name });
@@ -293,12 +297,15 @@ function ShareBrowser({ share, onClose }) {
           if (parentPath) fetchFiles(parentPath);
         }} disabled={cwd === share.path || !parentPath}>← Up</button>
         <div className="crumbs mono">
-          {cwd.split('/').filter(Boolean).map((p, i, arr) => (
-            <React.Fragment key={i}>
-              <span className="crumb-sep">/</span>
-              <button type="button" className="crumb" onClick={() => fetchFiles('/' + arr.slice(0, i + 1).join('/'))}>{p}</button>
-            </React.Fragment>
-          ))}
+          {cwd.split('/').filter(Boolean).map((p, i, arr) => {
+            const crumbPath = arr.slice(0, i + 1).join('/');
+            return (
+              <React.Fragment key={crumbPath}>
+                <span className="crumb-sep">/</span>
+                <button type="button" className="crumb" onClick={() => fetchFiles('/' + crumbPath)}>{p}</button>
+              </React.Fragment>
+            );
+          })}
         </div>
       </div>
       <div className="browse-list" style={{ maxHeight: '400px', overflowY: 'auto' }}>
@@ -400,6 +407,9 @@ function SystemUpdatesTab() {
   const [showLog, setShowLog] = useState(false);
   const [lastCheck, setLastCheck] = useState('—');
   const logEndRef = useRef(null);
+  const logContainerRef = useRef(null);
+  const mountedRef = useRef(true);
+  useEffect(() => () => { mountedRef.current = false; }, []);
 
   const fetchUpdates = async () => {
     try {
@@ -414,7 +424,11 @@ function SystemUpdatesTab() {
   };
 
   useEffect(() => { fetchUpdates(); }, []);
-  useEffect(() => { logEndRef.current?.scrollIntoView({ behavior: 'smooth' }); }, [log]);
+  useEffect(() => {
+    const c = logContainerRef.current;
+    const nearBottom = !c || (c.scrollHeight - c.scrollTop - c.clientHeight) < 80;
+    if (nearBottom) logEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+  }, [log]);
 
   const checkNow = async () => {
     setChecking(true);
@@ -467,31 +481,39 @@ function SystemUpdatesTab() {
       const reader = resp.body.getReader();
       const dec = new TextDecoder();
       let buf = '';
-      while (true) {
-        const { done, value } = await reader.read();
-        if (done) break;
-        buf += dec.decode(value, { stream: true });
-        const lines = buf.split('\n');
-        buf = lines.pop();
-        for (const line of lines) {
-          if (!line.startsWith('data: ')) continue;
-          try {
-            const obj = JSON.parse(line.slice(6));
-            if (obj.type === 'log') setLog(prev => [...prev, obj.text]);
-            if (obj.type === 'done') {
-              setRunning(false);
-              if (obj.code === 0) {
-                window.UI.toast({ kind: 'ok', title: 'Updates applied', body: `${names.length} package${names.length > 1 ? 's' : ''} updated${isKernel ? ' · Reboot recommended' : ''}`, ttl: 6000 });
-              } else {
-                window.UI.toast({ kind: 'err', title: 'Some packages failed', body: `apt exit code ${obj.code}` });
+      try {
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          buf += dec.decode(value, { stream: true });
+          const lines = buf.split('\n');
+          buf = lines.pop();
+          let parseFailed = false;
+          for (const line of lines) {
+            if (!line.startsWith('data: ')) continue;
+            try {
+              const obj = JSON.parse(line.slice(6));
+              if (obj.type === 'log' && mountedRef.current) setLog(prev => [...prev, obj.text]);
+              if (obj.type === 'done') {
+                if (mountedRef.current) setRunning(false);
+                if (obj.code === 0) {
+                  window.UI.toast({ kind: 'ok', title: 'Updates applied', body: `${names.length} package${names.length > 1 ? 's' : ''} updated${isKernel ? ' · Reboot recommended' : ''}`, ttl: 6000 });
+                } else {
+                  window.UI.toast({ kind: 'err', title: 'Some packages failed', body: `apt exit code ${obj.code}` });
+                }
+                fetchUpdates();
               }
-              fetchUpdates();
+            } catch {
+              parseFailed = true;
             }
-          } catch {}
+          }
+          if (parseFailed) break;
         }
+      } finally {
+        try { reader.releaseLock(); } catch {}
       }
     } catch (e) {
-      setRunning(false);
+      if (mountedRef.current) setRunning(false);
       window.UI.toast({ kind: 'err', title: 'Install failed', body: e.message });
     }
   };
@@ -534,7 +556,7 @@ function SystemUpdatesTab() {
             <span className="mono muted" style={{ fontSize: '11px' }}>apt output {running && '● live'}</span>
             <button className="btn-ghost" style={{ fontSize: '10px', padding: '2px 8px' }} onClick={() => setShowLog(false)}>hide</button>
           </div>
-          <pre style={{ fontFamily: 'monospace', fontSize: '11px', background: 'var(--bg-2)', border: '1px solid var(--line)', borderRadius: '8px', padding: '10px', maxHeight: '240px', overflow: 'auto', whiteSpace: 'pre-wrap', margin: 0 }}>
+          <pre ref={logContainerRef} style={{ fontFamily: 'monospace', fontSize: '11px', background: 'var(--bg-2)', border: '1px solid var(--line)', borderRadius: '8px', padding: '10px', maxHeight: '240px', overflow: 'auto', whiteSpace: 'pre-wrap', margin: 0 }}>
             {log.join('')}
             <span ref={logEndRef} />
           </pre>
@@ -609,7 +631,7 @@ function SSHKeysPanel() {
     });
     if (ok) {
       try {
-        await axios.delete(`/api/ssh/keys/${key.id}`);
+        await axios.delete(`/api/ssh/keys/${encodeURIComponent(key.id)}`);
         window.UI.toast({ kind: 'ok', title: 'Key removed', body: key.name });
         fetchKeys();
       } catch (e) {
@@ -742,8 +764,19 @@ function DeployKeyModal({ sshKey, onClose }) {
   const [running, setRunning] = useState(false);
 
   const submit = async () => {
+    const insecure = window.location.protocol !== 'https:' &&
+                     window.location.hostname !== 'localhost' &&
+                     window.location.hostname !== '127.0.0.1';
+    if (insecure) {
+      window.UI.toast({ kind: 'err', title: 'Insecure connection', body: 'Refusing to send credentials over plain HTTP. Use HTTPS.' });
+      return;
+    }
     if (!host) { window.UI.toast({ kind: 'err', title: 'Host required' }); return; }
     if (!password) { window.UI.toast({ kind: 'err', title: 'Password required' }); return; }
+    if (!(port >= 1 && port <= 65535)) {
+      window.UI.toast({ kind: 'err', title: 'Invalid port', body: 'Port must be between 1 and 65535.' });
+      return;
+    }
     setRunning(true);
     try {
       await axios.post('/api/ssh/keys/deploy', {
@@ -775,7 +808,10 @@ function DeployKeyModal({ sshKey, onClose }) {
     >
       <div className="form-cols">
         <FormField label="Remote host"><input value={host} onChange={(e) => setHost(e.target.value)} placeholder="prod.aymoon.dev" autoFocus className="mono" disabled={running} /></FormField>
-        <FormField label="Port"><input type="number" value={port} onChange={(e) => setPort(parseInt(e.target.value, 10))} className="mono" disabled={running} /></FormField>
+        <FormField label="Port"><input type="number" value={port} onChange={(e) => {
+          const n = Number.parseInt(e.target.value, 10);
+          setPort(Number.isFinite(n) ? n : 22);
+        }} className="mono" disabled={running} /></FormField>
         <FormField label="Remote user"><input value={user} onChange={(e) => setUser(e.target.value)} className="mono" disabled={running} /></FormField>
         <FormField label="Authentication" hint="One-time auth required to install the new key" span={2}>
           <div className="seg">
@@ -936,7 +972,7 @@ function DockerImagesTab() {
           </thead>
           <tbody>
             {images.map((img, i) => (
-              <tr key={i}>
+              <tr key={img.ID || i}>
                 <td>
                   {img.inUse
                     ? <span title="Used by a container" style={{ padding: '1px 6px', borderRadius: '3px', fontSize: '10px', background: 'oklch(0.25 0.06 145)', border: '1px solid oklch(0.45 0.12 145)', color: 'oklch(0.75 0.15 145)' }}>in use</span>
@@ -966,9 +1002,250 @@ function DockerImagesTab() {
   );
 }
 
+// ─── Docker Compose Stacks ─────────────────────────────────────────────────
+function StacksTab() {
+  const [stacks, setStacks] = useState([]);
+  const [scanDirs, setScanDirs] = useState([]);
+  const [loading, setLoading] = useState(false);
+  const [busy, setBusy] = useState({});
+  const [expanded, setExpanded] = useState(null);
+  const [detail, setDetail] = useState(null);
+  const [editor, setEditor] = useState(null);
+  const [logs, setLogs] = useState(null);
+  const mountedRef = useRef(true);
+
+  useEffect(() => () => { mountedRef.current = false; }, []);
+
+  const load = async () => {
+    setLoading(true);
+    try {
+      const r = await axios.get('/api/compose/stacks');
+      if (!mountedRef.current) return;
+      setStacks(r.data.stacks || []);
+      setScanDirs(r.data.scanDirs || []);
+    } catch (e) {
+      window.UI.toast({ kind: 'err', title: 'Failed to load stacks', body: e.response?.data?.error || e.message });
+    } finally {
+      if (mountedRef.current) setLoading(false);
+    }
+  };
+
+  useEffect(() => { load(); }, []);
+
+  const loadDetail = async (project) => {
+    try {
+      const r = await axios.get(`/api/compose/stacks/${encodeURIComponent(project)}`);
+      if (!mountedRef.current) return;
+      setDetail(r.data);
+    } catch (e) {
+      window.UI.toast({ kind: 'err', title: 'Failed to load stack', body: e.response?.data?.error || e.message });
+    }
+  };
+
+  const toggleExpand = (name) => {
+    if (expanded === name) {
+      setExpanded(null);
+      setDetail(null);
+    } else {
+      setExpanded(name);
+      setDetail(null);
+      loadDetail(name);
+    }
+  };
+
+  const action = async (project, act) => {
+    if (act === 'down') {
+      const ok = await window.UI.confirm({ title: 'Bring stack down?', body: `${project} containers will be stopped and removed.`, confirmLabel: 'Down', dangerous: true });
+      if (!ok) return;
+    }
+    setBusy(b => ({ ...b, [project]: act }));
+    try {
+      const r = await axios.post(`/api/compose/stacks/${encodeURIComponent(project)}/action`, { action: act });
+      window.UI.toast({ kind: 'ok', title: `${act} complete`, body: project });
+      const out = (r.data.output || '').trim();
+      if (out) console.log(`[${project} ${act}]\n${out}`);
+      await load();
+      if (expanded === project) await loadDetail(project);
+    } catch (e) {
+      window.UI.toast({ kind: 'err', title: `${act} failed`, body: e.response?.data?.error || e.message });
+    } finally {
+      if (mountedRef.current) setBusy(b => { const n = { ...b }; delete n[project]; return n; });
+    }
+  };
+
+  const viewFile = async (project) => {
+    try {
+      const r = await axios.get(`/api/compose/stacks/${encodeURIComponent(project)}/file`);
+      setEditor({ project, path: r.data.path, content: r.data.content, original: r.data.content });
+    } catch (e) {
+      window.UI.toast({ kind: 'err', title: 'Cannot read file', body: e.response?.data?.error || e.message });
+    }
+  };
+
+  const saveFile = async () => {
+    if (!editor) return;
+    try {
+      await axios.post(`/api/compose/stacks/${encodeURIComponent(editor.project)}/file`, { content: editor.content });
+      window.UI.toast({ kind: 'ok', title: 'Saved', body: editor.path });
+      setEditor(null);
+    } catch (e) {
+      window.UI.toast({ kind: 'err', title: 'Save failed', body: e.response?.data?.error || e.message });
+    }
+  };
+
+  const viewLogs = async (project) => {
+    setLogs({ project, content: 'Loading…' });
+    try {
+      const r = await axios.get(`/api/compose/stacks/${encodeURIComponent(project)}/logs`, { params: { tail: 500 } });
+      setLogs({ project, content: r.data.logs || '(no output)' });
+    } catch (e) {
+      setLogs({ project, content: `Error: ${e.response?.data?.error || e.message}` });
+    }
+  };
+
+  const statusBadge = (status) => {
+    const s = (status || '').toLowerCase();
+    let color = 'var(--text-3)', bg = 'var(--surface-2)';
+    if (s.includes('running')) { color = 'oklch(0.75 0.15 145)'; bg = 'oklch(0.25 0.06 145)'; }
+    else if (s.includes('exited') || s.includes('stopped')) { color = 'oklch(0.78 0.1 30)'; bg = 'oklch(0.25 0.06 30)'; }
+    else if (s.includes('partial')) { color = 'oklch(0.8 0.12 80)'; bg = 'oklch(0.25 0.06 80)'; }
+    return <span style={{ padding: '1px 6px', borderRadius: '3px', fontSize: '10px', background: bg, border: '1px solid var(--line)', color }}>{status || 'down'}</span>;
+  };
+
+  return (
+    <div className="tab-stacks">
+      <div className="services-toolbar">
+        <div style={{ flex: 1 }} className="muted mono">
+          {scanDirs.length > 0 ? `Scanning: ${scanDirs.join('  ·  ')}` : 'No scan directories configured'}
+        </div>
+        <button className="btn-ghost" onClick={load} disabled={loading}>{loading ? 'Loading…' : '↻ Refresh'}</button>
+      </div>
+
+      <div className="card" style={{ overflow: 'auto' }}>
+        <table className="proc-table mono" style={{ width: '100%', fontSize: '12px' }}>
+          <thead>
+            <tr>
+              <th style={{ width: '24px' }}></th>
+              <th>Project</th>
+              <th style={{ width: '120px' }}>Status</th>
+              <th>Location</th>
+              <th style={{ width: '320px', textAlign: 'right' }}>Actions</th>
+            </tr>
+          </thead>
+          <tbody>
+            {stacks.map((s) => (
+              <React.Fragment key={s.name}>
+                <tr style={{ cursor: 'pointer' }} onClick={() => toggleExpand(s.name)}>
+                  <td>{expanded === s.name ? '▾' : '▸'}</td>
+                  <td>{s.name}</td>
+                  <td>{statusBadge(s.status)}</td>
+                  <td className="muted" style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', maxWidth: 0 }} title={s.file || s.dir || ''}>{s.file || s.dir || '—'}</td>
+                  <td style={{ textAlign: 'right' }} onClick={(e) => e.stopPropagation()}>
+                    <button className="btn-ghost" disabled={!!busy[s.name]} onClick={() => action(s.name, 'up')} title="Bring up">{busy[s.name] === 'up' ? '…' : '▲ Up'}</button>
+                    <button className="btn-ghost" disabled={!!busy[s.name]} onClick={() => action(s.name, 'restart')} title="Restart">{busy[s.name] === 'restart' ? '…' : '↻'}</button>
+                    <button className="btn-ghost" disabled={!!busy[s.name]} onClick={() => action(s.name, 'pull')} title="Pull images">{busy[s.name] === 'pull' ? '…' : '↓'}</button>
+                    <button className="btn-ghost" disabled={!!busy[s.name]} onClick={() => action(s.name, 'down')} style={{ color: 'var(--err)' }} title="Down">{busy[s.name] === 'down' ? '…' : '▼'}</button>
+                  </td>
+                </tr>
+                {expanded === s.name && (
+                  <tr>
+                    <td colSpan={5} style={{ padding: 0 }}>
+                      <div style={{ padding: '12px 16px', background: 'var(--surface-2)', borderTop: '1px solid var(--line)' }}>
+                        <div style={{ display: 'flex', gap: 8, marginBottom: 8 }}>
+                          {s.file && <button className="btn-ghost" onClick={() => viewFile(s.name)}>View / Edit compose</button>}
+                          <button className="btn-ghost" onClick={() => viewLogs(s.name)}>Logs</button>
+                        </div>
+                        {!detail && <div className="muted">Loading services…</div>}
+                        {detail && detail.name === s.name && (
+                          detail.services.length === 0
+                            ? <div className="muted">No services running. Press Up to start.</div>
+                            : (
+                              <table style={{ width: '100%', fontSize: '11px' }}>
+                                <thead>
+                                  <tr style={{ textAlign: 'left', color: 'var(--text-3)' }}>
+                                    <th>Service</th>
+                                    <th>Container</th>
+                                    <th>Image</th>
+                                    <th>State</th>
+                                    <th>Ports</th>
+                                  </tr>
+                                </thead>
+                                <tbody>
+                                  {detail.services.map((sv) => (
+                                    <tr key={sv.container || sv.name}>
+                                      <td>{sv.name}</td>
+                                      <td className="muted">{sv.container}</td>
+                                      <td className="muted" style={{ maxWidth: 200, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={sv.image}>{sv.image}</td>
+                                      <td>{statusBadge(sv.state)}</td>
+                                      <td className="muted">{sv.ports || '—'}</td>
+                                    </tr>
+                                  ))}
+                                </tbody>
+                              </table>
+                            )
+                        )}
+                      </div>
+                    </td>
+                  </tr>
+                )}
+              </React.Fragment>
+            ))}
+          </tbody>
+        </table>
+        {stacks.length === 0 && !loading && (
+          <div className="empty muted" style={{ padding: 24 }}>
+            No compose stacks found. Place a <code>compose.yaml</code> under one of the scan directories above, or override with the <code>COMPOSE_SCAN_DIRS</code> env var.
+          </div>
+        )}
+      </div>
+      <div className="mono muted" style={{ fontSize: '10px', marginTop: '6px' }}>{stacks.length} stack{stacks.length !== 1 ? 's' : ''}</div>
+
+      {editor && (
+        <div className="modal-backdrop" onMouseDown={(e) => e.target === e.currentTarget && setEditor(null)}>
+          <div className="modal" style={{ width: 'min(900px, 90vw)', maxHeight: '85vh', display: 'flex', flexDirection: 'column' }}>
+            <div className="modal-head">
+              <div style={{ flex: 1 }}>
+                <div>{editor.project}</div>
+                <div className="muted mono" style={{ fontSize: 11 }}>{editor.path}</div>
+              </div>
+              <button className="icon-btn" onClick={() => setEditor(null)}>✕</button>
+            </div>
+            <textarea
+              className="mono"
+              value={editor.content}
+              onChange={(e) => setEditor({ ...editor, content: e.target.value })}
+              style={{ flex: 1, minHeight: 400, fontSize: 12, padding: 12, border: '1px solid var(--line)', borderRadius: 4, background: 'var(--surface-2)', color: 'var(--text-1)', resize: 'none' }}
+              spellCheck={false}
+            />
+            <div className="modal-foot">
+              <button className="btn-ghost" onClick={() => setEditor(null)}>Cancel</button>
+              <button className="btn-accent" onClick={saveFile} disabled={editor.content === editor.original}>Save</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {logs && (
+        <div className="modal-backdrop" onMouseDown={(e) => e.target === e.currentTarget && setLogs(null)}>
+          <div className="modal" style={{ width: 'min(900px, 90vw)', maxHeight: '85vh', display: 'flex', flexDirection: 'column' }}>
+            <div className="modal-head">
+              <div>Logs · {logs.project}</div>
+              <button className="icon-btn" onClick={() => setLogs(null)}>✕</button>
+            </div>
+            <pre className="mono" style={{ flex: 1, minHeight: 400, maxHeight: '70vh', overflow: 'auto', padding: 12, fontSize: 11, background: 'var(--surface-2)', border: '1px solid var(--line)', borderRadius: 4, whiteSpace: 'pre-wrap', wordBreak: 'break-all' }}>
+              {logs.content}
+            </pre>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
 export {
   ShareEditor, ShareBrowser,
   SystemUpdatesTab, SSHKeysPanel,
   DockerImagesTab,
+  StacksTab,
   PowerMenu, FormField, ToggleField, SectionLabel,
 };
