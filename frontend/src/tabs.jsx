@@ -1939,6 +1939,35 @@ function FilesTab() {
   const [viewMode, setViewMode] = useState('list'); // list, grid
   const [showSidebar, setShowSidebar] = useState(true);
 
+  // Multi-select, drag/drop, search overlay, image preview, rename, path editor, context menu
+  const [multiSelected, setMultiSelected] = useState(() => new Set());
+  const [lastClickIndex, setLastClickIndex] = useState(null);
+  const [dragOver, setDragOver] = useState(false);
+  const [renamingPath, setRenamingPath] = useState(null);
+  const [renameValue, setRenameValue] = useState('');
+  const [pathEditing, setPathEditing] = useState(false);
+  const [pathEditValue, setPathEditValue] = useState('');
+  const [globalSearchQuery, setGlobalSearchQuery] = useState('');
+  const [globalSearchResults, setGlobalSearchResults] = useState(null);
+  const [globalSearchLoading, setGlobalSearchLoading] = useState(false);
+  const [previewOpen, setPreviewOpen] = useState(false);
+  const [previewFile, setPreviewFile] = useState(null);
+  const [ctxMenu, setCtxMenu] = useState(null); // { x, y, item, isDir }
+  const mountedRef = useRef(true);
+  useEffect(() => () => { mountedRef.current = false; }, []);
+  // Close context menu on any outside click
+  useEffect(() => {
+    if (!ctxMenu) return;
+    const close = () => setCtxMenu(null);
+    window.addEventListener('click', close);
+    window.addEventListener('scroll', close, true);
+    return () => {
+      window.removeEventListener('click', close);
+      window.removeEventListener('scroll', close, true);
+    };
+  }, [ctxMenu]);
+  const PREVIEW_IMAGE_EXTS = new Set(['png','jpg','jpeg','gif','webp','svg','bmp']);
+
   const [favorites, setFavorites] = useState(() => {
     const cached = localStorage.getItem('file_favorites');
     if (cached) {
@@ -1972,20 +2001,26 @@ function FilesTab() {
     setLoading(true);
     setViewFile(null);
     setSelected(null);
+    setMultiSelected(new Set());
+    setLastClickIndex(null);
+    setGlobalSearchResults(null);
+    setGlobalSearchQuery('');
+    setRenamingPath(null);
     try {
       const res = await axios.get('/api/samba/browse', { params: { path: p, showHidden: hidden } });
+      if (!mountedRef.current) return;
       setCurrentPath(res.data.currentPath);
       setFolders(res.data.folders || []);
       setFiles(res.data.files || []);
     } catch (e) {
       window.UI.toast({ kind: 'err', title: 'Browse error', body: e.message });
-    } finally { setLoading(false); }
+    } finally { if (mountedRef.current) setLoading(false); }
   };
 
   useEffect(() => { fetchDir(currentPath); }, []);
 
-  const handleUpload = async (e) => {
-    const filesToUpload = Array.from(e.target.files || []);
+  const handleFiles = async (fileList) => {
+    const filesToUpload = Array.from(fileList || []);
     if (filesToUpload.length === 0) return;
 
     const CHUNK_SIZE = 2 * 1024 * 1024; // 2MB chunk
@@ -2006,7 +2041,7 @@ function FilesTab() {
         formData.append('chunkIndex', String(chunkIndex));
         formData.append('totalChunks', String(totalChunks));
 
-        setUploadProgress({
+        if (mountedRef.current) setUploadProgress({
           name: fileName,
           pct: Math.round(((chunkIndex + 0.5) / totalChunks) * 100)
         });
@@ -2017,16 +2052,18 @@ function FilesTab() {
           });
         } catch (err) {
           window.UI.toast({ kind: 'err', title: 'Upload failed', body: err.message });
-          setUploadProgress(null);
+          if (mountedRef.current) setUploadProgress(null);
           return;
         }
       }
-      setUploadProgress({ name: fileName, pct: 100 });
-      setTimeout(() => setUploadProgress(null), 1000);
+      if (mountedRef.current) setUploadProgress({ name: fileName, pct: 100 });
+      setTimeout(() => { if (mountedRef.current) setUploadProgress(null); }, 1000);
     }
     window.UI.toast({ kind: 'ok', title: 'Upload complete', body: `${filesToUpload.length} file(s) uploaded.` });
     fetchDir(currentPath);
   };
+
+  const handleUpload = (e) => handleFiles(e.target.files);
 
   const createFile = async () => {
     const name = prompt('New file name:');
@@ -2140,6 +2177,11 @@ function FilesTab() {
       clickTimer.current = setTimeout(() => {
         clickTimer.current = null;
         setSelected(prev => prev === item.name ? null : item.name);
+        if (!isDir && PREVIEW_IMAGE_EXTS.has(fileExt(item.name)) && previewOpen) {
+          setPreviewFile({ ...item, kind: 'image' });
+        } else if (!isDir && fileExt(item.name) === 'pdf' && previewOpen) {
+          setPreviewFile({ ...item, kind: 'pdf' });
+        }
       }, 220);
     }
   };
@@ -2210,6 +2252,175 @@ function FilesTab() {
     } catch (e) {
       window.UI.toast({ kind: 'err', title: 'Failed', body: e.response?.data?.error || e.message });
     }
+  };
+
+  // Combined ordered list of visible rows used to compute shift-click ranges
+  const visibleRows = useMemo(() => {
+    const dirs = filteredFolders.map(f => ({ ...f, isDir: true }));
+    const fls = filteredFiles.map(f => ({ ...f, isDir: false }));
+    return [...dirs, ...fls];
+  }, [filteredFolders, filteredFiles]);
+
+  const toggleRowChecked = (item, idx, ev) => {
+    ev.stopPropagation();
+    setMultiSelected(prev => {
+      const next = new Set(prev);
+      if (ev.shiftKey && lastClickIndex !== null) {
+        const [a, b] = [Math.min(lastClickIndex, idx), Math.max(lastClickIndex, idx)];
+        for (let i = a; i <= b; i++) {
+          const r = visibleRows[i];
+          if (r) next.add(r.path);
+        }
+      } else {
+        if (next.has(item.path)) next.delete(item.path);
+        else next.add(item.path);
+      }
+      return next;
+    });
+    setLastClickIndex(idx);
+  };
+
+  const toggleSelectAllVisible = () => {
+    setMultiSelected(prev => {
+      const all = visibleRows.map(r => r.path);
+      const allChecked = all.length > 0 && all.every(p => prev.has(p));
+      if (allChecked) return new Set();
+      return new Set(all);
+    });
+  };
+
+  const clearMultiSelect = () => { setMultiSelected(new Set()); setLastClickIndex(null); };
+
+  const bulkDelete = async () => {
+    const paths = Array.from(multiSelected);
+    if (paths.length === 0) return;
+    const ok = await window.UI.confirm({
+      title: `Delete ${paths.length} item${paths.length === 1 ? '' : 's'}?`,
+      body: 'This action cannot be undone.',
+      confirmLabel: 'Delete', dangerous: true,
+    });
+    if (!ok) return;
+    let failures = 0;
+    for (const p of paths) {
+      try {
+        await axios.post('/api/files/trash', { path: p });
+      } catch (e) {
+        try { await axios.delete('/api/files', { params: { path: p } }); }
+        catch (e2) { failures++; }
+      }
+    }
+    if (failures === 0) window.UI.toast({ kind: 'ok', title: 'Deleted', body: `${paths.length} item(s)` });
+    else window.UI.toast({ kind: 'warn', title: 'Partial delete', body: `${failures} failed of ${paths.length}` });
+    clearMultiSelect();
+    fetchDir(currentPath);
+  };
+
+  const bulkMoveOrCopy = async (action) => {
+    const paths = Array.from(multiSelected);
+    if (paths.length === 0) return;
+    const dest = prompt(`Destination directory for ${paths.length} item(s):`, currentPath);
+    if (!dest) return;
+    let failures = 0;
+    for (const p of paths) {
+      const base = p.split('/').pop();
+      const to = dest.replace(/\/$/, '') + '/' + base;
+      try {
+        await axios.post(action === 'move' ? '/api/files/move' : '/api/files/copy', { from: p, to });
+      } catch (e) { failures++; }
+    }
+    if (failures === 0) window.UI.toast({ kind: 'ok', title: action === 'move' ? 'Moved' : 'Copied', body: `${paths.length} item(s)` });
+    else window.UI.toast({ kind: 'warn', title: 'Partial ' + action, body: `${failures} failed of ${paths.length}` });
+    clearMultiSelect();
+    fetchDir(currentPath);
+  };
+
+  const bulkCompress = async (download = false) => {
+    const paths = Array.from(multiSelected);
+    if (paths.length === 0) return;
+    let target;
+    if (download) {
+      target = '/tmp/dashboard-zip-' + Math.random().toString(36).slice(2, 10) + '.zip';
+    } else {
+      const ts = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
+      const name = prompt('Archive name:', `archive-${ts}.zip`);
+      if (!name) return;
+      target = currentPath.replace(/\/$/, '') + '/' + name;
+    }
+    try {
+      await axios.post('/api/files/archive', { action: 'compress', paths, target });
+      window.UI.toast({ kind: 'ok', title: 'Archive created', body: target.split('/').pop() });
+      if (download) {
+        const a = document.createElement('a');
+        a.href = `/api/files/download?path=${encodeURIComponent(target)}`;
+        a.style.display = 'none';
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+      } else {
+        fetchDir(currentPath);
+      }
+    } catch (e) {
+      window.UI.toast({ kind: 'err', title: 'Archive failed', body: e.response?.data?.error || e.message });
+    }
+    clearMultiSelect();
+  };
+
+  const startRename = (item) => {
+    setRenamingPath(item.path);
+    setRenameValue(item.name);
+  };
+
+  const commitRename = async (item) => {
+    const newName = renameValue.trim();
+    if (!newName || newName.includes('/')) {
+      window.UI.toast({ kind: 'err', title: 'Invalid name', body: 'Name must be non-empty and contain no "/"' });
+      return;
+    }
+    if (newName === item.name) { setRenamingPath(null); return; }
+    const parent = item.path.replace(/\/[^/]+\/?$/, '') || '/';
+    const to = (parent === '/' ? '' : parent) + '/' + newName;
+    try {
+      await axios.post('/api/files/move', { from: item.path, to });
+      window.UI.toast({ kind: 'ok', title: 'Renamed', body: newName });
+      setRenamingPath(null);
+      fetchDir(currentPath);
+    } catch (e) {
+      window.UI.toast({ kind: 'err', title: 'Rename failed', body: e.response?.data?.error || e.message });
+    }
+  };
+
+  const runGlobalSearch = async () => {
+    const q = globalSearchQuery.trim();
+    if (!q) { setGlobalSearchResults(null); return; }
+    setGlobalSearchLoading(true);
+    try {
+      const res = await axios.get('/api/files/search', { params: { path: currentPath, q, max: 200 } });
+      if (!mountedRef.current) return;
+      setGlobalSearchResults(res.data.results || res.data.items || res.data || []);
+    } catch (e) {
+      window.UI.toast({ kind: 'err', title: 'Search failed', body: e.response?.data?.error || e.message });
+    } finally { if (mountedRef.current) setGlobalSearchLoading(false); }
+  };
+
+  const shareViaSamba = async (item) => {
+    const name = prompt(`Samba share name for "${item.name}":`, item.name);
+    if (!name) return;
+    if (!/^[A-Za-z0-9_.-]{1,64}$/.test(name)) {
+      window.UI.toast({ kind: 'err', title: 'Invalid name', body: 'Use A-Z, 0-9, _ . - (max 64 chars)' });
+      return;
+    }
+    try {
+      await axios.post('/api/samba/shares', { name, path: item.path, writable: true, browsable: true, guestOk: false });
+      window.UI.toast({ kind: 'ok', title: 'Share created', body: name });
+    } catch (e) {
+      window.UI.toast({ kind: 'err', title: 'Share failed', body: e.response?.data?.error || e.message });
+    }
+  };
+
+  const openContextMenu = (e, item, isDir) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setCtxMenu({ x: e.clientX, y: e.clientY, item: { ...item, isDir }, isDir });
   };
 
   return (
@@ -2340,6 +2551,7 @@ function FilesTab() {
         <button type="button" className="btn-ghost sm" onClick={createFile}>+ File</button>
         <button type="button" className="btn-ghost sm" onClick={() => setOp({ type: 'mkdir', value: '' })}>+ Dir</button>
         <button type="button" className="btn-ghost sm" onClick={() => fileInputRef.current?.click()}>+ Upload</button>
+        <button type="button" className="btn-ghost sm" title="Open this folder in the Code workspace" onClick={() => window.dispatchEvent(new CustomEvent('open-workspace', { detail: { cwd: currentPath } }))}>⌘ Open in Code</button>
         <input
           type="file"
           ref={fileInputRef}

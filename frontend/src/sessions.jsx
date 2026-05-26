@@ -15,13 +15,20 @@ function SessionsProvider({ children }) {
 
   const launch = useCallback((opts) => {
     const id = 's' + (++seq.current);
+    const baseData = opts.data || null;
+    const mergedData = (opts.cwd != null || opts.env != null || opts.agent != null)
+      ? { ...(baseData || {}),
+          ...(opts.cwd != null ? { cwd: opts.cwd } : {}),
+          ...(opts.env != null ? { env: opts.env } : {}),
+          ...(opts.agent != null ? { agent: opts.agent } : {}) }
+      : baseData;
     const session = {
       id,
       type: opts.type || 'shell', // shell | agent | ssh | logs | docker
       title: opts.title || 'Shell',
       subtitle: opts.subtitle || '',
       glyph: opts.glyph || '›_',
-      data: opts.data || null,
+      data: mergedData,
       status: 'connecting',
       started: Date.now(),
     };
@@ -220,8 +227,14 @@ function RealTerminalPane({ session, active }) {
     const proto = window.location.protocol === 'https:' ? 'wss' : 'ws';
     const params = new URLSearchParams();
     if (session.type === 'agent' && session.data?.id) params.set('agent', session.data.id);
+    if (session.data?.agent) params.set('agent', session.data.agent);
     if (session.type === 'docker' && session.data?.container) params.set('docker', session.data.container);
     if (session.type === 'ssh') params.set('ssh', 'true');
+    if (session.data?.cwd) params.set('cwd', session.data.cwd);
+    if (session.data?.env != null) {
+      const envCsv = Array.isArray(session.data.env) ? session.data.env.join(',') : String(session.data.env);
+      if (envCsv) params.set('env', envCsv);
+    }
     params.set('cols', String(term.cols));
     params.set('rows', String(term.rows));
 

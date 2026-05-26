@@ -17,6 +17,7 @@ import {
   KBD
 } from './tabs.jsx';
 import { PowerMenu, DockerImagesTab, StacksTab } from './features.jsx';
+import { CodeWorkspaceTab } from './code-workspace.jsx';
 
 const TABS = [
   { id: 'overview', label: 'Overview', glyph: '◇', section: 'system' },
@@ -24,6 +25,7 @@ const TABS = [
   { id: 'web',      label: 'Web UIs',  glyph: '▦', section: 'services' },
   { id: 'backend',  label: 'Backend',  glyph: '⇆', section: 'services' },
   { id: 'docker',   label: 'Images',   glyph: '◈', section: 'services' },
+  { id: 'code',     label: 'Code',     glyph: '⌘', section: 'shell' },
   { id: 'stacks',   label: 'Stacks',   glyph: '◰', section: 'services' },
   { id: 'agents',   label: 'Agents',   glyph: '✦', section: 'services' },
   { id: 'samba',    label: 'Samba',    glyph: '◫', section: 'storage' },
@@ -183,6 +185,7 @@ function Shell() {
       case 'samba':    return <SambaTab />;
       case 'files':    return <FilesTab />;
       case 'ssh':      return <SSHTab />;
+      case 'code':     return <CodeWorkspaceTab />;
       default: return null;
     }
   };
