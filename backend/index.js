@@ -1,5 +1,5 @@
 const express = require('express');
-const { exec, execFile } = require('child_process');
+const { exec, execFile, spawn } = require('child_process');
 const axios = require('axios');
 const cors = require('cors');
 const path = require('path');
@@ -1052,7 +1052,6 @@ const KNOWN_AGENTS = [
     { id: 'qwen-code', label: 'Qwen Code', cmd: 'qwen-code', vendor: 'Alibaba' },
     { id: 'ollama', label: 'Ollama', cmd: 'ollama', vendor: 'Ollama' },
     { id: 'goose', label: 'Goose', cmd: 'goose', vendor: 'Block' },
-    { id: 'continue', label: 'Continue', cmd: 'continue', vendor: 'Continue' },
 ];
 
 const FALLBACK_SEARCH_DIRS = [
@@ -2281,6 +2280,330 @@ function validateWorkspacePayload(body, partial = false) {
     return out;
 }
 
+// ── Agent Scheduled Jobs ─────────────────────────────────────────────────────
+const AGENT_JOBS_FILE = process.env.AGENT_JOBS_FILE || '/var/lib/hosted-dashboard/agent-jobs.json';
+const AJ_MAX_RUNS = 25;
+const AJ_MAX_OUTPUT = 256 * 1024; // 256 KB per run
+
+function ensureJobsFile() {
+    try { fs.mkdirSync(path.dirname(AGENT_JOBS_FILE), { recursive: true }); } catch {}
+    if (!fs.existsSync(AGENT_JOBS_FILE)) {
+        fs.writeFileSync(AGENT_JOBS_FILE, JSON.stringify({ jobs: [] }, null, 2), { mode: 0o600 });
+    }
+}
+function loadJobs() {
+    ensureJobsFile();
+    try { const d = JSON.parse(fs.readFileSync(AGENT_JOBS_FILE, 'utf8')); return Array.isArray(d.jobs) ? d.jobs : []; }
+    catch { return []; }
+}
+function saveJobs(list) {
+    ensureJobsFile();
+    const tmp = AGENT_JOBS_FILE + '.tmp.' + process.pid;
+    fs.writeFileSync(tmp, JSON.stringify({ jobs: list }, null, 2), { mode: 0o600 });
+    fs.renameSync(tmp, AGENT_JOBS_FILE);
+}
+
+const ajRunning = new Map(); // jobId -> { proc, runId, buf }
+
+function ajBuildCmd(agentId, task) {
+    switch (agentId) {
+        case 'claude':
+        case 'claude-code': return { cmd: 'claude',   args: ['--dangerously-skip-permissions', '--print', task], stdin: null };
+        case 'gemini':      return { cmd: 'gemini',   args: ['-p', task, '--yolo'],                              stdin: null };
+        case 'aider':       return { cmd: 'aider',    args: ['--message', task, '--yes', '--no-auto-commits'],   stdin: null };
+        case 'antigravity': return { cmd: 'agy',      args: ['--dangerously-skip-permissions', '--print', task], stdin: null };
+        case 'codex':       return { cmd: 'codex',    args: ['exec', '--dangerously-bypass-approvals-and-sandbox', task], stdin: null };
+        case 'opencode':    return { cmd: 'opencode', args: ['run', task],                                       stdin: null };
+        case 'kilocode':
+        case 'kilo':        return { cmd: agentId === 'kilo' ? 'kilo' : 'kilocode', args: ['run', task],         stdin: null };
+        case 'ollama': {
+            // ollama needs <model> <prompt>. Conventions:
+            //  - "model::prompt"  → split on the first '::'
+            //  - first non-empty line is the model when it contains no spaces (e.g. "llama3.2")
+            //  - otherwise default to OLLAMA_DEFAULT_MODEL env or 'llama3.2'
+            const def = process.env.OLLAMA_DEFAULT_MODEL || 'llama3.2';
+            let model = def, prompt = task;
+            const sep = task.indexOf('::');
+            if (sep > 0) { model = task.slice(0, sep).trim() || def; prompt = task.slice(sep + 2).trim(); }
+            else {
+                const firstLine = task.split('\n', 1)[0].trim();
+                if (firstLine && !/\s/.test(firstLine) && /[a-zA-Z]/.test(firstLine)) {
+                    model = firstLine;
+                    prompt = task.slice(firstLine.length).trim();
+                }
+            }
+            return { cmd: 'ollama', args: ['run', model, prompt], stdin: null };
+        }
+        case 'shell':       return { cmd: 'bash',     args: ['-c', task],                                        stdin: null };
+        default: {
+            const a = KNOWN_AGENTS.find(x => x.id === agentId);
+            return { cmd: a?.cmd || agentId, args: [], stdin: task };
+        }
+    }
+}
+
+function ajFinalizeRun(jobId, runId, { status, output, exitCode }) {
+    try {
+        const jobs = loadJobs();
+        const job = jobs.find(j => j.id === jobId);
+        if (!job) return;
+        const run = job.runs?.find(r => r.id === runId);
+        if (run) { run.status = status; run.output = output; run.exitCode = exitCode; run.completedAt = new Date().toISOString(); }
+        job.status = status === 'cancelled' ? 'idle' : status;
+        saveJobs(jobs);
+    } catch (e) { console.error('[agent-jobs] finalizeRun:', e.message); }
+}
+
+function ajExecute(jobOrId) {
+    const jobs = loadJobs();
+    const job = typeof jobOrId === 'string' ? jobs.find(j => j.id === jobOrId) : jobs.find(j => j.id === jobOrId.id);
+    if (!job || ajRunning.has(job.id)) return;
+
+    const ws = loadWorkspaces().find(w => w.id === job.workspaceId);
+    const cwd = ws?.cwd || process.env.HOME || `/home/${TARGET_USER}`;
+
+    const { cmd, args, stdin } = ajBuildCmd(job.agentId, job.task);
+    const runId = require('crypto').randomBytes(6).toString('hex');
+    const startedAt = new Date().toISOString();
+
+    // Persist start
+    {
+        const jlist = loadJobs();
+        const j = jlist.find(x => x.id === job.id);
+        if (!j) return;
+        j.runs = [{ id: runId, startedAt, completedAt: null, status: 'running', output: '', exitCode: null }, ...(j.runs || [])].slice(0, AJ_MAX_RUNS);
+        j.status = 'running'; j.lastRunAt = startedAt;
+        saveJobs(jlist);
+    }
+
+    const env = {};
+    for (const k of ALLOWED_ENV_PASSTHROUGH) if (process.env[k] != null) env[k] = process.env[k];
+    Object.assign(env, { TERM: 'dumb', HOME: process.env.HOME || `/home/${TARGET_USER}`, PATH: process.env.PATH || '/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/home/linuxbrew/.linuxbrew/bin' });
+
+    let proc;
+    try {
+        proc = spawn('sudo', ['-n', '-u', TARGET_USER, '--', cmd, ...args], { cwd, env });
+    } catch (e) {
+        ajFinalizeRun(job.id, runId, { status: 'failed', output: e.message, exitCode: -1 });
+        return;
+    }
+    if (stdin) {
+        try { proc.stdin?.write(stdin + '\n'); proc.stdin?.end(); } catch {}
+    } else {
+        // Close stdin so processes that read from it (TUIs like gemini, aider) don't hang
+        try { proc.stdin?.end(); } catch {}
+    }
+
+    let buf = '';
+    let flushTid = null;
+    const schedFlush = () => {
+        if (flushTid) return;
+        flushTid = setTimeout(() => {
+            flushTid = null;
+            try {
+                const jlist = loadJobs();
+                const j = jlist.find(x => x.id === job.id);
+                const r = j?.runs?.find(r => r.id === runId);
+                if (r) { r.output = buf; saveJobs(jlist); }
+            } catch {}
+        }, 2000);
+    };
+    const onData = (d) => {
+        buf += d.toString();
+        if (buf.length > AJ_MAX_OUTPUT) buf = '…' + buf.slice(-(AJ_MAX_OUTPUT - 1));
+        const entry = ajRunning.get(job.id);
+        if (entry) entry.buf = buf;
+        schedFlush();
+    };
+    proc.stdout?.on('data', onData);
+    proc.stderr?.on('data', onData);
+
+    ajRunning.set(job.id, { proc, runId, buf: '' });
+
+    const killTimer = setTimeout(() => {
+        if (ajRunning.has(job.id)) try { proc.kill('SIGTERM'); } catch {}
+    }, (job.timeout || 300) * 1000);
+
+    proc.on('close', (code, signal) => {
+        clearTimeout(killTimer);
+        if (flushTid) { clearTimeout(flushTid); flushTid = null; }
+        ajRunning.delete(job.id);
+        const status = signal ? 'timeout' : (code === 0 ? 'completed' : 'failed');
+        ajFinalizeRun(job.id, runId, { status, output: buf, exitCode: code });
+    });
+    proc.on('error', (e) => {
+        clearTimeout(killTimer);
+        if (flushTid) { clearTimeout(flushTid); flushTid = null; }
+        ajRunning.delete(job.id);
+        ajFinalizeRun(job.id, runId, { status: 'failed', output: e.message, exitCode: -1 });
+    });
+}
+
+// Agent-jobs scheduler (runs alongside backup scheduler)
+let ajSchedMin = -1;
+setInterval(() => {
+    const now = new Date();
+    const min = now.getMinutes();
+    if (min === ajSchedMin) return;
+    ajSchedMin = min;
+    try {
+        loadJobs().filter(j => j.enabled && j.schedule && !ajRunning.has(j.id))
+            .forEach(j => { if (isCronDue(j.schedule, now)) { console.log(`[AgentJobs] trigger: ${j.name}`); ajExecute(j); } });
+    } catch (e) { console.error('[AgentJobs] scheduler:', e.message); }
+}, 10000);
+
+// ── Agent Jobs API ────────────────────────────────────────────────────────────
+app.get('/api/agent-jobs', (req, res) => {
+    try {
+        const tz = Intl.DateTimeFormat().resolvedOptions().timeZone || process.env.TZ || 'UTC';
+        res.json({
+            jobs: loadJobs().map(j => ({ ...j, isRunning: ajRunning.has(j.id), runs: (j.runs || []).map(r => ({ ...r, output: undefined })) })),
+            tz,
+        });
+    } catch (e) { res.status(500).json({ error: errMsg(e) }); }
+});
+
+app.get('/api/agent-jobs/:id', (req, res) => {
+    try {
+        const job = loadJobs().find(j => j.id === req.params.id);
+        if (!job) return res.status(404).json({ error: 'Not found' });
+        // Inject live buffered output for the running run
+        const live = ajRunning.get(job.id);
+        const runs = (job.runs || []).map(r => live && r.id === live.runId ? { ...r, output: live.buf } : r);
+        res.json({ job: { ...job, isRunning: !!live, runs } });
+    } catch (e) { res.status(500).json({ error: errMsg(e) }); }
+});
+
+app.post('/api/agent-jobs', (req, res) => {
+    try {
+        const { name, agentId, workspaceId, task, schedule, timeout, enabled } = req.body || {};
+        if (!name?.trim() || !agentId || !task?.trim()) return res.status(400).json({ error: 'name, agentId, task required' });
+        const job = {
+            id: crypto.randomBytes(8).toString('hex'),
+            name: name.trim().slice(0, 80), agentId,
+            workspaceId: workspaceId || null,
+            task: task.trim().slice(0, 8000),
+            schedule: schedule || null,
+            timeout: Math.max(30, Math.min(7200, parseInt(timeout) || 300)),
+            enabled: enabled !== false, status: 'idle',
+            createdAt: Date.now(), updatedAt: Date.now(), lastRunAt: null, runs: [],
+        };
+        const list = loadJobs(); list.push(job); saveJobs(list);
+        res.json({ job });
+    } catch (e) { res.status(500).json({ error: errMsg(e) }); }
+});
+
+app.put('/api/agent-jobs/:id', (req, res) => {
+    try {
+        const list = loadJobs();
+        const idx = list.findIndex(j => j.id === req.params.id);
+        if (idx < 0) return res.status(404).json({ error: 'Not found' });
+        const { name, agentId, workspaceId, task, schedule, timeout, enabled } = req.body || {};
+        const j = list[idx];
+        if (name !== undefined) j.name = name.trim().slice(0, 80);
+        if (agentId !== undefined) j.agentId = agentId;
+        if (workspaceId !== undefined) j.workspaceId = workspaceId;
+        if (task !== undefined) j.task = task.trim().slice(0, 8000);
+        if (schedule !== undefined) j.schedule = schedule || null;
+        if (timeout !== undefined) j.timeout = Math.max(30, Math.min(7200, parseInt(timeout) || 300));
+        if (enabled !== undefined) j.enabled = Boolean(enabled);
+        j.updatedAt = Date.now();
+        saveJobs(list);
+        res.json({ job: j });
+    } catch (e) { res.status(500).json({ error: errMsg(e) }); }
+});
+
+app.delete('/api/agent-jobs/:id', (req, res) => {
+    try {
+        const live = ajRunning.get(req.params.id);
+        if (live) { try { live.proc.kill('SIGTERM'); } catch {} ajRunning.delete(req.params.id); }
+        const list = loadJobs().filter(j => j.id !== req.params.id);
+        saveJobs(list);
+        res.json({ ok: true });
+    } catch (e) { res.status(500).json({ error: errMsg(e) }); }
+});
+
+app.post('/api/agent-jobs/:id/run', (req, res) => {
+    try {
+        const job = loadJobs().find(j => j.id === req.params.id);
+        if (!job) return res.status(404).json({ error: 'Not found' });
+        if (ajRunning.has(job.id)) return res.status(409).json({ error: 'Already running' });
+        ajExecute(job);
+        res.json({ ok: true });
+    } catch (e) { res.status(500).json({ error: errMsg(e) }); }
+});
+
+app.post('/api/agent-jobs/:id/clone', (req, res) => {
+    try {
+        const list = loadJobs();
+        const src = list.find(j => j.id === req.params.id);
+        if (!src) return res.status(404).json({ error: 'Not found' });
+        const job = {
+            ...src,
+            id: crypto.randomBytes(8).toString('hex'),
+            name: `${src.name} (copy)`.slice(0, 80),
+            enabled: false,
+            status: 'idle',
+            createdAt: Date.now(),
+            updatedAt: Date.now(),
+            lastRunAt: null,
+            runs: [],
+        };
+        list.push(job);
+        saveJobs(list);
+        res.json({ job });
+    } catch (e) { res.status(500).json({ error: errMsg(e) }); }
+});
+
+app.post('/api/agent-jobs/:id/cancel', (req, res) => {
+    try {
+        const live = ajRunning.get(req.params.id);
+        if (!live) return res.status(404).json({ error: 'Not running' });
+        try { live.proc.kill('SIGTERM'); } catch {}
+        ajRunning.delete(req.params.id);
+        ajFinalizeRun(req.params.id, live.runId, { status: 'cancelled', output: live.buf, exitCode: -1 });
+        res.json({ ok: true });
+    } catch (e) { res.status(500).json({ error: errMsg(e) }); }
+});
+
+// Filesystem directory browser for workspace folder picker
+app.get('/api/fs/browse', (req, res) => {
+    const { path: dirPath } = req.query;
+    if (!dirPath) return res.status(400).json({ error: 'path is required' });
+    const targetPath = path.resolve(dirPath);
+    try {
+        const items = fs.readdirSync(targetPath, { withFileTypes: true });
+        const folders = [];
+        for (const item of items) {
+            if (item.name.startsWith('.')) continue;
+            let isDir = item.isDirectory();
+            if (item.isSymbolicLink()) {
+                try { isDir = fs.statSync(fs.realpathSync(path.join(targetPath, item.name))).isDirectory(); } catch {}
+            }
+            if (!isDir) continue;
+            folders.push({ name: item.name, path: path.join(targetPath, item.name) });
+        }
+        folders.sort((a, b) => a.name.localeCompare(b.name));
+        res.json({ currentPath: targetPath, parentPath: targetPath === '/' ? null : path.dirname(targetPath), folders });
+    } catch (e) {
+        res.status(400).json({ error: e.message });
+    }
+});
+
+app.post('/api/fs/mkdir', (req, res) => {
+    const { parent, name } = req.body;
+    if (!parent || !name) return res.status(400).json({ error: 'parent and name are required' });
+    const safeName = name.replace(/[/\0]/g, '').trim();
+    if (!safeName) return res.status(400).json({ error: 'Invalid folder name' });
+    const newDir = path.join(path.resolve(parent), safeName);
+    try {
+        fs.mkdirSync(newDir, { recursive: false });
+        res.json({ path: newDir, name: safeName });
+    } catch (e) {
+        res.status(400).json({ error: e.code === 'EEXIST' ? 'Folder already exists' : e.message });
+    }
+});
+
 app.get('/api/workspaces', (req, res) => {
     try { res.json({ workspaces: loadWorkspaces() }); }
     catch (e) { res.status(500).json({ error: errMsg(e) }); }
@@ -3114,8 +3437,11 @@ server.on('upgrade', (req, socket, head) => {
     const sameOrigin = isSameOriginUpgrade(req);
     const tokenOk = AGENT_TOKEN && timingSafeCompare(parsed.query.key || '', AGENT_TOKEN);
     const allow = loopback || tokenOk || (TERMINAL_ALLOW_LAN && sameOrigin);
+    
+    console.log(`[WS Upgrade] remote=${remote} loopback=${loopback} sameOrigin=${sameOrigin} allow=${allow}`);
     if (!allow) {
         const reason = !sameOrigin ? 'origin-mismatch' : 'lan-disabled';
+        console.warn(`[WS Upgrade] Rejected: reason=${reason}`);
         socket.write(`HTTP/1.1 403 Forbidden\r\nX-Reject-Reason: ${reason}\r\n\r\n`);
         socket.destroy();
         return;
@@ -3312,11 +3638,16 @@ wss.on('connection', (ws, req) => {
             cwd: spawnCwd,
         });
 
-        if (agent) {
-            setTimeout(() => {
-                try { term.write(`${agent.cmd}\n`); } catch (e) {}
-            }, 250);
-        }
+        setTimeout(() => {
+            try {
+                if (spawnCwd && spawnCwd !== '/') {
+                    term.write(`cd ${shellQuote(spawnCwd)}\n`);
+                }
+                if (agent) {
+                    term.write(`${agent.cmd}\n`);
+                }
+            } catch (e) {}
+        }, 500);
 
         term.onData((data) => {
             if (ws.readyState === ws.OPEN) ws.send(data);

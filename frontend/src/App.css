@@ -337,6 +337,10 @@ input, textarea, select { font-family: inherit; font-size: inherit; color: var(-
   padding: var(--pad);
   background: var(--bg);
 }
+.shell-main--fullscreen {
+  padding: 0;
+  overflow: hidden;
+}
 
 .page-head {
   display: flex; align-items: baseline; gap: 12px;

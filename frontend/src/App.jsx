@@ -18,6 +18,7 @@ import {
 } from './tabs.jsx';
 import { PowerMenu, DockerImagesTab, StacksTab } from './features.jsx';
 import { CodeWorkspaceTab } from './code-workspace.jsx';
+import { AgentJobsTab } from './agent-jobs.jsx';
 
 const TABS = [
   { id: 'overview', label: 'Overview', glyph: '◇', section: 'system' },
@@ -26,6 +27,7 @@ const TABS = [
   { id: 'backend',  label: 'Backend',  glyph: '⇆', section: 'services' },
   { id: 'docker',   label: 'Images',   glyph: '◈', section: 'services' },
   { id: 'code',     label: 'Code',     glyph: '⌘', section: 'shell' },
+  { id: 'jobs',     label: 'Jobs',     glyph: '◫', section: 'shell' },
   { id: 'stacks',   label: 'Stacks',   glyph: '◰', section: 'services' },
   { id: 'agents',   label: 'Agents',   glyph: '✦', section: 'services' },
   { id: 'samba',    label: 'Samba',    glyph: '◫', section: 'storage' },
@@ -185,7 +187,7 @@ function Shell() {
       case 'samba':    return <SambaTab />;
       case 'files':    return <FilesTab />;
       case 'ssh':      return <SSHTab />;
-      case 'code':     return <CodeWorkspaceTab />;
+      case 'jobs':     return <AgentJobsTab />;
       default: return null;
     }
   };
@@ -312,12 +314,18 @@ function Shell() {
         </nav>
       )}
 
-      <main className="shell-main">
-        <div className="page-head">
-          <h1>{tabDef?.label}</h1>
-          <span className="page-sub">{pageSub(activeTab, hostName, hostUptime, updateCount)}</span>
+      <main className={`shell-main${['code','jobs'].includes(activeTab) ? ' shell-main--fullscreen' : ''}`}>
+        {!['code','jobs'].includes(activeTab) && (
+          <div className="page-head">
+            <h1>{tabDef?.label}</h1>
+            <span className="page-sub">{pageSub(activeTab, hostName, hostUptime, updateCount)}</span>
+          </div>
+        )}
+        {!['code','jobs'].includes(activeTab) && <ErrorBoundary>{renderTab()}</ErrorBoundary>}
+        <div style={{ display: activeTab === 'code' ? 'contents' : 'none' }}>
+          <CodeWorkspaceTab isVisible={activeTab === 'code'} />
         </div>
-        <ErrorBoundary>{renderTab()}</ErrorBoundary>
+        {activeTab === 'jobs' && <ErrorBoundary><AgentJobsTab /></ErrorBoundary>}
       </main>
 
       {paletteOpen && (

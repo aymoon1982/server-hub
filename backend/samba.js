@@ -17,7 +17,7 @@ function assertSafe(re, value, label) {
 }
 function hasUnsafeChars(s) { return typeof s !== 'string' || /[\r\n\[\]]/.test(s); }
 
-const BROWSE_ROOT = path.resolve(process.env.SAMBA_BROWSE_ROOT || '/srv');
+const BROWSE_ROOT = path.resolve(process.env.SAMBA_BROWSE_ROOT || '/');
 
 const FORBIDDEN_TARGETS = new Set(['/', '/etc', '/root', '/home', '/boot', '/usr', '/var', '/proc', '/sys', '/dev', '/bin', '/sbin', '/lib', '/lib64']);
 
@@ -689,14 +689,20 @@ async function getLogs() {
 }
 
 async function browse(dirPath, showHidden = false) {
+    let targetPath = BROWSE_ROOT;
     try {
         if (dirPath !== undefined && dirPath !== null && typeof dirPath !== 'string') {
             throw new Error('Invalid path');
         }
-        const targetPath = dirPath ? path.resolve(BROWSE_ROOT, dirPath) : BROWSE_ROOT;
-        if (targetPath !== BROWSE_ROOT && !targetPath.startsWith(BROWSE_ROOT + path.sep)) {
+        targetPath = dirPath ? path.resolve(BROWSE_ROOT, dirPath) : BROWSE_ROOT;
+        
+        // Ensure path is within BROWSE_ROOT
+        const relative = path.relative(BROWSE_ROOT, targetPath);
+        const isOutside = relative.startsWith('..') || path.isAbsolute(relative);
+        if (targetPath !== BROWSE_ROOT && isOutside) {
             throw new Error('Path outside allowed root');
         }
+        
         const items = fs.readdirSync(targetPath, { withFileTypes: true });
         const folders = [];
         const files = [];
