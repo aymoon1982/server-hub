@@ -1,7 +1,7 @@
 {
   "name": "backend",
   "version": "0.2.0",
-  "description": "Hosted Dashboard backend — service discovery and system stats",
+  "description": "Server Hub backend — service discovery and system stats",
   "main": "index.js",
   "scripts": {
     "start": "node index.js",

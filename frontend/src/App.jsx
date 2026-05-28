@@ -19,6 +19,7 @@ import {
 import { PowerMenu, DockerImagesTab, StacksTab } from './features.jsx';
 import { CodeWorkspaceTab } from './code-workspace.jsx';
 import { AgentJobsTab } from './agent-jobs.jsx';
+import { CLIUsageTab } from './cli-usage.jsx';
 
 const TABS = [
   { id: 'overview', label: 'Overview', glyph: '◇', section: 'system' },
@@ -33,6 +34,7 @@ const TABS = [
   { id: 'samba',    label: 'Samba',    glyph: '◫', section: 'storage' },
   { id: 'files',    label: 'Files',    glyph: '▢', section: 'storage' },
   { id: 'ssh',      label: 'SSH',      glyph: '⇄', section: 'shell' },
+  { id: 'usage',    label: 'CLI Usage', glyph: '⚡', section: 'system' },
 ];
 
 const SECTIONS = [
@@ -188,6 +190,7 @@ function Shell() {
       case 'files':    return <FilesTab />;
       case 'ssh':      return <SSHTab />;
       case 'jobs':     return <AgentJobsTab />;
+      case 'usage':    return <CLIUsageTab />;
       default: return null;
     }
   };
@@ -395,6 +398,7 @@ function pageSub(tab, hostName, hostUptime, updateCount) {
     case 'samba':    return `Shares, users, connections and service control`;
     case 'files':    return `Browse, edit, copy, move and manage files`;
     case 'ssh':      return `Saved SSH connections, keys, and known_hosts`;
+    case 'usage':    return `Claude Code & agy usage monitoring`;
     default: return '';
   }
 }

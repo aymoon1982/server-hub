@@ -42,8 +42,8 @@ const resolveTargetUser = () => {
 const TARGET_USER = resolveTargetUser();
 const AGENT_TOKEN = process.env.DASHBOARD_TERMINAL_TOKEN || null;
 const SIGN_SECRET = process.env.DASHBOARD_SIGN_SECRET || (() => { const s = crypto.randomBytes(32).toString('hex'); console.warn('[sign] using ephemeral secret; set DASHBOARD_SIGN_SECRET for persistence'); return s; })();
-const TRASH_DIR = path.resolve(process.env.DASHBOARD_TRASH_DIR || '/var/cache/hosted-dashboard/trash');
-const WORKSPACES_FILE = process.env.DASHBOARD_WORKSPACES || '/var/lib/hosted-dashboard/workspaces.json';
+const TRASH_DIR = path.resolve(process.env.DASHBOARD_TRASH_DIR || '/var/cache/server-hub/trash');
+const WORKSPACES_FILE = process.env.DASHBOARD_WORKSPACES || '/var/lib/server-hub/workspaces.json';
 const ALLOWED_ENV_PASSTHROUGH = ['ANTHROPIC_API_KEY','OPENAI_API_KEY','GEMINI_API_KEY','GOOGLE_API_KEY','AZURE_OPENAI_API_KEY','OPENROUTER_API_KEY','MISTRAL_API_KEY','GROQ_API_KEY','XAI_API_KEY','DEEPSEEK_API_KEY','OLLAMA_HOST','EDITOR','VISUAL','PATH','HOME','USER','SHELL','LANG','LC_ALL','TERM','NODE_OPTIONS','GH_TOKEN','GITHUB_TOKEN','CLAUDE_CODE_USE_BEDROCK','AWS_ACCESS_KEY_ID','AWS_SECRET_ACCESS_KEY','AWS_REGION','AWS_PROFILE'];
 
 const STATE_PATH = path.join(__dirname, 'data', 'state.json');
@@ -354,7 +354,7 @@ const discoverServicesRaw = async () => {
         if (processName === 'node-MainThread' || processName === 'MainThread') processName = 'Node App';
         if (processName === 'python' || processName === 'python3') processName = 'Python App';
         if (processName && /^[a-z]/.test(processName)) processName = processName.charAt(0).toUpperCase() + processName.slice(1);
-        if (port === 80 || port === parseInt(PORT)) processName = 'Hosted Dashboard';
+        if (port === 80 || port === parseInt(PORT)) processName = 'Server Hub';
 
         const service = { name: processName, port, type: 'process', pid, usage: { cpu: 0, mem: 0 } };
         services.push(service);
@@ -1035,6 +1035,47 @@ app.get('/api/health', (req, res) => {
     });
 });
 
+// CLI Usage Status — returns Claude CLI and agy usage data
+app.get('/api/usage-status', async (req, res) => {
+    try {
+        const trackerPath = '/home/ayman/.openclaw/workspace/scripts/usage-api.sh';
+        if (!fs.existsSync(trackerPath)) {
+            return res.json({
+                timestamp: new Date().toISOString(),
+                claude: { status: 'unknown', reset_estimate: 'N/A', total_calls_24h: 0, hourly_calls: Array(24).fill(0), quota_percent: 0, checked_at: null },
+                agy: { status: 'unknown', reset_estimate: 'N/A', total_calls_24h: 0, hourly_calls: Array(24).fill(0), quota_percent: 0, checked_at: null }
+            });
+        }
+        exec(`bash ${trackerPath}`, { timeout: 10000 }, (error, stdout) => {
+            if (error) {
+                console.error('[usage-status] Error:', error.message);
+                return res.json({
+                    timestamp: new Date().toISOString(),
+                    claude: { status: 'unknown', reset_estimate: 'N/A', total_calls_24h: 0, hourly_calls: Array(24).fill(0), quota_percent: 0, checked_at: null },
+                    agy: { status: 'unknown', reset_estimate: 'N/A', total_calls_24h: 0, hourly_calls: Array(24).fill(0), quota_percent: 0, checked_at: null }
+                });
+            }
+            try {
+                res.json(JSON.parse(stdout));
+            } catch (e) {
+                console.error('[usage-status] Parse error:', e.message);
+                res.json({
+                    timestamp: new Date().toISOString(),
+                    claude: { status: 'unknown', reset_estimate: 'N/A', total_calls_24h: 0, hourly_calls: Array(24).fill(0), quota_percent: 0, checked_at: null },
+                    agy: { status: 'unknown', reset_estimate: 'N/A', total_calls_24h: 0, hourly_calls: Array(24).fill(0), quota_percent: 0, checked_at: null }
+                });
+            }
+        });
+    } catch (e) {
+        console.error('[usage-status] Error:', e.message);
+        res.json({
+            timestamp: new Date().toISOString(),
+            claude: { status: 'unknown', reset_estimate: 'N/A', total_calls_24h: 0, hourly_calls: Array(24).fill(0), quota_percent: 0, checked_at: null },
+            agy: { status: 'unknown', reset_estimate: 'N/A', total_calls_24h: 0, hourly_calls: Array(24).fill(0), quota_percent: 0, checked_at: null }
+        });
+    }
+});
+
 const KNOWN_AGENTS = [
     { id: 'claude', label: 'Claude Code', cmd: 'claude', vendor: 'Anthropic' },
     { id: 'claude-code', label: 'Claude Code (alias)', cmd: 'claude-code', vendor: 'Anthropic' },
@@ -1470,7 +1511,7 @@ app.post('/api/ssh/keys/generate', async (req, res) => {
         ? type.toLowerCase()
         : 'ed25519';
     const bitsVal = parseInt(bits, 10) || 2048;
-    const commentVal = typeof comment === 'string' ? comment.slice(0, 100) : 'hosted-dashboard-key';
+    const commentVal = typeof comment === 'string' ? comment.slice(0, 100) : 'server-hub-key';
     const passVal = typeof passphrase === 'string' ? passphrase : '';
 
     const keyPath = `/home/ayman/.ssh/${name}`;
@@ -2281,7 +2322,7 @@ function validateWorkspacePayload(body, partial = false) {
 }
 
 // ── Agent Scheduled Jobs ─────────────────────────────────────────────────────
-const AGENT_JOBS_FILE = process.env.AGENT_JOBS_FILE || '/var/lib/hosted-dashboard/agent-jobs.json';
+const AGENT_JOBS_FILE = process.env.AGENT_JOBS_FILE || '/var/lib/server-hub/agent-jobs.json';
 const AJ_MAX_RUNS = 25;
 const AJ_MAX_OUTPUT = 256 * 1024; // 256 KB per run
 
@@ -3689,4 +3730,4 @@ wss.on('connection', (ws, req) => {
     }
 });
 
-server.listen(PORT, '0.0.0.0', () => console.log(`Hosted Dashboard v${pkg.version} on port ${PORT} (terminal user=${TARGET_USER}, lan-terminal=${TERMINAL_ALLOW_LAN})`));
+server.listen(PORT, '0.0.0.0', () => console.log(`Server Hub v${pkg.version} on port ${PORT} (terminal user=${TARGET_USER}, lan-terminal=${TERMINAL_ALLOW_LAN})`));

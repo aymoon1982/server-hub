@@ -1,4 +1,4 @@
-# Hosted Dashboard
+# Server Hub
 
 A self-hosted server management dashboard — auto-discover web services, monitor system resources, manage Docker containers, Samba shares, file browsing, and in-browser terminal. Single-page React app.
 
@@ -54,7 +54,7 @@ A self-hosted server management dashboard — auto-discover web services, monito
 ## Project Structure
 
 ```
-hosted-dashboard/
+server-hub/
 ├── backend/
 │   ├── index.js        # Express API: services, stats, docker, agents, terminal, samba
 │   ├── samba.js        # Samba share/user/service management (613 lines)
@@ -138,14 +138,14 @@ The backend reads `/proc`, spawns PTY shells, and controls system services — i
 
 ```ini
 [Unit]
-Description=Hosted Dashboard
+Description=Server Hub
 After=network.target
 
 [Service]
-ExecStart=/usr/bin/node /home/ayman/projects/hosted-dashboard/backend/index.js
+ExecStart=/usr/bin/node /home/ayman/projects/server-hub/backend/index.js
 Restart=always
 Environment=PORT=80
-WorkingDirectory=/home/ayman/projects/hosted-dashboard/backend
+WorkingDirectory=/home/ayman/projects/server-hub/backend
 
 [Install]
 WantedBy=multi-user.target
