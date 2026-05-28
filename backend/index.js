@@ -59,9 +59,10 @@ const loadState = () => {
             history: parsed.history && typeof parsed.history === 'object' ? parsed.history : {},
             alerts: parsed.alerts && typeof parsed.alerts === 'object' ? parsed.alerts : { cpu: 90, ram: 90, disk: 90 },
             backups: Array.isArray(parsed.backups) ? parsed.backups : [],
+            overrides: parsed.overrides && typeof parsed.overrides === 'object' ? parsed.overrides : {},
         };
     } catch (e) {
-        return { manual: [], history: {}, alerts: { cpu: 90, ram: 90, disk: 90 }, backups: [] };
+        return { manual: [], history: {}, alerts: { cpu: 90, ram: 90, disk: 90 }, backups: [], overrides: {} };
     }
 };
 const state = loadState();
@@ -233,6 +234,49 @@ const probePort = async (port) => {
     if (httpRes) return httpRes;
     if (httpsRes) return httpsRes;
     return { isWebUi: false, status: 'down', protocol: null, title: null, faviconHref: null };
+};
+
+const findProjectIconInCwd = (cwd) => {
+    if (!cwd || !fs.existsSync(cwd)) return null;
+    const candidates = [
+        'favicon.ico', 'favicon.png', 'favicon.svg',
+        'logo.png', 'logo.svg', 'logo.jpg',
+        'icon.png', 'icon.svg',
+        'public/favicon.ico', 'public/favicon.png', 'public/favicon.svg',
+        'public/logo.png', 'public/logo.svg',
+        'src/assets/logo.svg', 'src/assets/logo.png',
+        'assets/logo.svg', 'assets/logo.png'
+    ];
+    for (const cand of candidates) {
+        const fullPath = path.join(cwd, cand);
+        try {
+            if (fs.existsSync(fullPath) && fs.statSync(fullPath).isFile()) {
+                return `/api/services/icon?path=${encodeURIComponent(fullPath)}`;
+            }
+        } catch (e) {}
+    }
+    return null;
+};
+
+const findLocalIcon = (pid) => {
+    try {
+        if (!pid) return null;
+        const cwd = fs.realpathSync(`/proc/${pid}/cwd`);
+        return findProjectIconInCwd(cwd);
+    } catch (e) {}
+    return null;
+};
+
+const findDockerComposeIcon = (composeProject) => {
+    if (!composeProject) return null;
+    try {
+        const fsStacks = scanFilesystemForStacks();
+        const match = fsStacks.find(s => s.name === composeProject);
+        if (match && match.dir) {
+            return findProjectIconInCwd(match.dir);
+        }
+    } catch (e) {}
+    return null;
 };
 
 const resolveProcessName = (pid, rawProcessName) => {
@@ -417,10 +461,24 @@ const discoverServices = async () => {
 
 const buildFaviconUrl = (host, port, protocol, href) => {
     if (!href || !protocol) return null;
-    if (/^https?:\/\//i.test(href)) return href;
-    if (href.startsWith('//')) return `${protocol}:${href}`;
-    if (href.startsWith('/')) return `${protocol}://${host}:${port}${href}`;
-    return `${protocol}://${host}:${port}/${href}`;
+    let target = '';
+    if (/^https?:\/\//i.test(href)) {
+        target = href;
+    } else if (href.startsWith('//')) {
+        target = `${protocol}:${href}`;
+    } else if (href.startsWith('/')) {
+        target = `${protocol}://127.0.0.1:${port}${href}`;
+    } else {
+        target = `${protocol}://127.0.0.1:${port}/${href}`;
+    }
+    
+    try {
+        const parsed = new URL(target);
+        if (parsed.hostname === '127.0.0.1' || parsed.hostname === 'localhost' || parsed.hostname.startsWith('192.168.')) {
+            return `/api/services/favicon-proxy?url=${encodeURIComponent(target)}`;
+        }
+    } catch (e) {}
+    return target;
 };
 
 app.get('/api/services', async (req, res) => {
@@ -470,13 +528,22 @@ app.get('/api/services', async (req, res) => {
             }
             return acc;
         }, {});
-        const results = Object.values(grouped).map(s => ({
-            ...s,
-            port: s.ports.length > 0 ? (s.ports.length > 1 ? s.ports.sort((a, b) => a - b).join(', ') : s.ports[0]) : '—',
-            url: s.isWebUi ? s.urls[0] : null,
-            favicon: s.isWebUi && s.favicons.length > 0 ? s.favicons[0] : null,
-            displayName: s.isWebUi && s.titles.length > 0 ? s.titles[0] : s.name,
-        }));
+        const results = Object.values(grouped).map(s => {
+            const override = (state.overrides && state.overrides[s.name]) || {};
+            let localIcon = null;
+            if (s.type === 'process' && s.pid) {
+                localIcon = findLocalIcon(s.pid);
+            } else if (s.type === 'docker' && s.composeProject) {
+                localIcon = findDockerComposeIcon(s.composeProject);
+            }
+            return {
+                ...s,
+                port: s.ports.length > 0 ? (s.ports.length > 1 ? s.ports.sort((a, b) => a - b).join(', ') : s.ports[0]) : '—',
+                url: s.isWebUi ? s.urls[0] : null,
+                favicon: override.favicon || (s.isWebUi && s.favicons.length > 0 ? s.favicons[0] : null) || localIcon,
+                displayName: override.label || (s.isWebUi && s.titles.length > 0 ? s.titles[0] : s.name),
+            };
+        });
 
         const now = Date.now();
         for (const r of results) {
@@ -547,6 +614,99 @@ app.delete('/api/services/manual/:id', (req, res) => {
     delete state.history[`manual|${id}`];
     saveState();
     res.json({ ok: true });
+});
+
+app.post('/api/services/override', (req, res) => {
+    const { name, isManual, manualId, label, favicon, url } = req.body || {};
+    
+    if (isManual || manualId) {
+        const id = manualId;
+        const m = (state.manual || []).find(x => x.id === id);
+        if (m) {
+            if (label !== undefined) m.label = label ? String(label).slice(0, 80) : null;
+            if (favicon !== undefined) m.favicon = favicon ? String(favicon).slice(0, 500) : null;
+            if (url !== undefined) {
+                try {
+                    new URL(url);
+                    m.url = String(url).slice(0, 500);
+                } catch (e) {
+                    return res.status(400).json({ error: 'invalid url' });
+                }
+            }
+            saveState();
+            return res.json({ ok: true });
+        }
+        return res.status(404).json({ error: 'Manual service not found' });
+    } else if (name) {
+        if (!state.overrides) state.overrides = {};
+        state.overrides[name] = {
+            label: label ? String(label).slice(0, 80) : undefined,
+            favicon: favicon ? String(favicon).slice(0, 500) : undefined,
+        };
+        saveState();
+        return res.json({ ok: true });
+    }
+    
+    res.status(400).json({ error: 'name or manualId is required' });
+});
+
+app.get('/api/services/icon', (req, res) => {
+    const { path: filePath } = req.query;
+    if (!filePath) return res.status(400).send('path required');
+    const resolvedPath = path.resolve(filePath);
+    
+    const isSafePath = resolvedPath.startsWith('/home/ayman') || 
+                       resolvedPath.startsWith('/opt/stacks') || 
+                       resolvedPath.startsWith('/srv/stacks') || 
+                       resolvedPath.startsWith('/etc/docker/compose');
+                       
+    if (!isSafePath) {
+        return res.status(403).send('Forbidden');
+    }
+    
+    const ext = path.extname(resolvedPath).toLowerCase();
+    const mimeTypes = {
+        '.png': 'image/png',
+        '.jpg': 'image/jpeg',
+        '.jpeg': 'image/jpeg',
+        '.gif': 'image/gif',
+        '.svg': 'image/svg+xml',
+        '.ico': 'image/x-icon',
+        '.webp': 'image/webp'
+    };
+    
+    const mime = mimeTypes[ext];
+    if (!mime) return res.status(400).send('Not an image');
+    
+    if (!fs.existsSync(resolvedPath)) {
+        return res.status(404).send('Not found');
+    }
+    
+    res.setHeader('Content-Type', mime);
+    fs.createReadStream(resolvedPath).pipe(res);
+});
+
+app.get('/api/services/favicon-proxy', async (req, res) => {
+    const { url: targetUrl } = req.query;
+    if (!targetUrl) return res.status(400).send('url required');
+    try {
+        const parsed = new URL(targetUrl);
+        if (parsed.hostname !== '127.0.0.1' && parsed.hostname !== 'localhost' && !parsed.hostname.startsWith('192.168.')) {
+            return res.status(403).send('Forbidden target');
+        }
+        
+        const response = await axios.get(targetUrl, {
+            responseType: 'stream',
+            timeout: 2000,
+            httpsAgent: insecureHttpsAgent,
+            validateStatus: () => true
+        });
+        
+        res.setHeader('Content-Type', response.headers['content-type'] || 'image/x-icon');
+        response.data.pipe(res);
+    } catch (e) {
+        res.status(500).send(e.message);
+    }
 });
 
 app.post('/api/docker/control', async (req, res) => {
@@ -1395,7 +1555,7 @@ app.get('/api/updates', async (req, res) => {
         return res.json(updatesCache);
     }
     try {
-        const out = await runCommand("apt list --upgradable 2>/dev/null | grep -v '^Listing'");
+        const out = await runCommand("apt list --upgradable 2>/dev/null | grep -v '^Listing' || true");
         const updates = [];
         for (const line of out.trim().split('\n').filter(Boolean)) {
             const m = line.match(/^([^/]+)\/(\S+)\s+(\S+)\s+(\S+)\s+\[upgradable from:\s+([^\]]+)\]/);
@@ -1420,7 +1580,7 @@ app.get('/api/updates', async (req, res) => {
 
 app.post('/api/updates/check', async (req, res) => {
     try {
-        await runCommand('apt-get update -q 2>/dev/null');
+        await runCommandThrow('apt-get update -q 2>&1');
         updatesCache = null;
         res.json({ ok: true });
     } catch (e) {
@@ -1443,14 +1603,19 @@ app.post('/api/updates/apply', (req, res) => {
 
     const send = (obj) => { try { res.write(`data: ${JSON.stringify(obj)}\n\n`); } catch {} };
     const pkgList = packages.map(p => shellQuote(p)).join(' ');
-    const proc = exec(`DEBIAN_FRONTEND=noninteractive apt-get install --only-upgrade -y ${pkgList} 2>&1`);
-    proc.stdout?.on('data', (d) => send({ type: 'log', text: d.toString() }));
+    const { spawn } = require('child_process');
+    const proc = spawn('apt-get', ['install', '--only-upgrade', '-y', ...packages], {
+        env: { ...process.env, DEBIAN_FRONTEND: 'noninteractive' },
+        stdio: ['ignore', 'pipe', 'pipe'],
+    });
+    proc.stdout.on('data', (d) => send({ type: 'log', text: d.toString() }));
+    proc.stderr.on('data', (d) => send({ type: 'log', text: d.toString() }));
     proc.on('close', (code) => {
         updatesCache = null;
         send({ type: 'done', code });
         res.end();
     });
-    req.on('close', () => { try { proc.kill(); } catch {} });
+    res.on('close', () => { try { proc.kill(); } catch {} });
 });
 
 // SSH Keys Management Endpoints

@@ -81,11 +81,18 @@ function Chip({ children, tone, onClick, active }) {
   );
 }
 
-function Favicon({ ch, tag }) {
+function Favicon({ ch, tag, size }) {
   const tags = { media: 285, 'smart-home': 145, storage: 220, monitoring: 30, arr: 320, devops: 200, security: 0, network: 180, database: 250, cache: 12, queue: 60, system: 220 };
   const hue = tags[tag] ?? 270;
+  const sizeStyle = size ? {
+    width: `${size}px`,
+    height: `${size}px`,
+    minWidth: `${size}px`,
+    fontSize: `${size * 0.55}px`,
+    borderRadius: size === 18 ? '3px' : '4px'
+  } : {};
   return (
-    <div className="favicon" style={{ background: `oklch(0.42 0.08 ${hue})`, color: `oklch(0.92 0.06 ${hue})` }}>
+    <div className="favicon" style={{ background: `oklch(0.42 0.08 ${hue})`, color: `oklch(0.92 0.06 ${hue})`, ...sizeStyle }}>
       {ch}
     </div>
   );
@@ -508,11 +515,108 @@ function KpiCard({ label, value, sub, onClick, colorClass = 'kpi-violet' }) {
 }
 
 
+function ServiceIcon({ favicon, displayName, type, size = 24 }) {
+  const [failed, setFailed] = useState(!favicon);
+
+  useEffect(() => {
+    setFailed(!favicon);
+  }, [favicon]);
+
+  if (failed || !favicon) {
+    return <Favicon ch={(displayName || '?')[0].toUpperCase()} tag={type} size={size} />;
+  }
+
+  return (
+    <img
+      src={favicon}
+      alt=""
+      className="favicon-img"
+      style={{
+        width: `${size}px`,
+        height: `${size}px`,
+        borderRadius: size === 18 ? '3px' : '4px',
+        objectFit: 'contain'
+      }}
+      onError={() => setFailed(true)}
+    />
+  );
+}
+
+function PreviewIcon({ favicon, displayName }) {
+  const [failed, setFailed] = useState(!favicon);
+
+  useEffect(() => {
+    setFailed(!favicon);
+  }, [favicon]);
+
+  if (failed || !favicon) {
+    return <div className="pcard-glyph">{(displayName || '?')[0].toUpperCase()}</div>;
+  }
+
+  return (
+    <img
+      src={favicon}
+      alt=""
+      style={{ width: '48px', height: '48px', borderRadius: '8px', zIndex: 1, objectFit: 'contain' }}
+      onError={() => setFailed(true)}
+    />
+  );
+}
+
+function ServiceEditModal({ service, onSave, onClose }) {
+  const [label, setLabel] = useState(service.displayName || service.name || '');
+  const [favicon, setFavicon] = useState(service.favicon || '');
+  const [url, setUrl] = useState(service.url || '');
+
+  const isManual = service.type === 'manual';
+
+  const handleSave = (e) => {
+    e.preventDefault();
+    onSave({
+      name: service.name,
+      isManual: isManual,
+      manualId: service.manualId,
+      label: label.trim(),
+      favicon: favicon.trim(),
+      url: isManual ? url.trim() : undefined,
+    });
+  };
+
+  return (
+    <Modal
+      title={`Edit Card: ${service.name}`}
+      subtitle={`${service.type} service ${service.port ? `on port ${service.port}` : ''}`}
+      onClose={onClose}
+      footer={
+        <>
+          <button type="button" className="btn-ghost" onClick={onClose}>Cancel</button>
+          <button type="button" className="btn-accent" onClick={handleSave}>Save</button>
+        </>
+      }
+    >
+      <form onSubmit={handleSave} className="form-cols">
+        <FormField label="Custom Display Name" hint="Leave blank to use default name">
+          <input value={label} onChange={(e) => setLabel(e.target.value)} placeholder={service.name} className="mono" />
+        </FormField>
+        <FormField label="Custom Icon URL" hint="URL to custom PNG/SVG/ICO icon">
+          <input value={favicon} onChange={(e) => setFavicon(e.target.value)} placeholder="https://example.com/icon.png" className="mono" />
+        </FormField>
+        {isManual && (
+          <FormField label="Service URL" hint="Address of the manual service">
+            <input value={url} onChange={(e) => setUrl(e.target.value)} placeholder="http://localhost:8080" className="mono" />
+          </FormField>
+        )}
+      </form>
+    </Modal>
+  );
+}
+
 // ---------- SERVICES ----------
 function ServicesTab({ kind, cardStyle }) {
   const [services, setServices] = useState([]);
   const [q, setQ] = useState('');
   const [filter, setFilter] = useState('all');
+  const [editingService, setEditingService] = useState(null);
 
   const fetchServices = async () => {
     try {
@@ -551,6 +655,17 @@ function ServicesTab({ kind, cardStyle }) {
         fetchServices();
       })
       .catch(e => window.UI.toast({ kind: 'err', title: 'Failed to add', body: e.message }));
+  };
+
+  const saveOverride = async (payload) => {
+    try {
+      await axios.post('/api/services/override', payload);
+      window.UI.toast({ kind: 'ok', title: 'Service updated', body: payload.label || payload.name });
+      setEditingService(null);
+      fetchServices();
+    } catch (e) {
+      window.UI.toast({ kind: 'err', title: 'Failed to update', body: e.response?.data?.error || e.message });
+    }
   };
 
   const restart = async (s) => {
@@ -649,20 +764,28 @@ function ServicesTab({ kind, cardStyle }) {
         </div>
       </div>
 
-      {cardStyle === 'list' && <ServicesList list={filtered} kind={kind} onLogs={onLogs} onRestart={restart} onStop={stop} onOpen={open} />}
-      {cardStyle === 'tile' && <ServicesTiles list={filtered} kind={kind} onLogs={onLogs} onRestart={restart} onOpen={open} />}
-      {cardStyle === 'preview' && <ServicesPreview list={filtered} kind={kind} onLogs={onLogs} onOpen={open} />}
+      {cardStyle === 'list' && <ServicesList list={filtered} kind={kind} onLogs={onLogs} onRestart={restart} onStop={stop} onOpen={open} onEdit={setEditingService} />}
+      {cardStyle === 'tile' && <ServicesTiles list={filtered} kind={kind} onLogs={onLogs} onRestart={restart} onOpen={open} onEdit={setEditingService} />}
+      {cardStyle === 'preview' && <ServicesPreview list={filtered} kind={kind} onLogs={onLogs} onOpen={open} onEdit={setEditingService} />}
+
+      {editingService && (
+        <ServiceEditModal
+          service={editingService}
+          onSave={saveOverride}
+          onClose={() => setEditingService(null)}
+        />
+      )}
     </div>
   );
 }
 
-function ServicesTiles({ list, kind, onLogs, onRestart, onOpen }) {
+function ServicesTiles({ list, kind, onLogs, onRestart, onOpen, onEdit }) {
   return (
     <div className="svc-tiles">
       {list.map(s => (
         <div key={s.name} className={`svc-tile ${!s.isRunning ? 'is-stopped' : ''}`}>
           <div className="svc-tile-top">
-            {s.favicon ? <img src={s.favicon} alt="" className="favicon-img" style={{ width: '24px', height: '24px', borderRadius: '4px' }} onError={(e) => { e.target.style.display = 'none'; }} /> : <Favicon ch={(s.displayName || '?')[0].toUpperCase()} tag={s.type} />}
+            <ServiceIcon favicon={s.favicon} displayName={s.displayName} type={s.type} size={24} />
           </div>
           <div className="svc-tile-name" title={s.displayName}>{s.displayName}</div>
           <div className="svc-tile-meta mono">
@@ -676,6 +799,7 @@ function ServicesTiles({ list, kind, onLogs, onRestart, onOpen }) {
           </div>
           <div className="svc-tile-hover">
             {kind === 'web' && s.url && <button className="hov-btn primary" onClick={() => onOpen(s)}>Open ↗</button>}
+            <button className="hov-btn" onClick={() => onEdit(s)}>Edit</button>
             {s.type === 'docker' && <button className="hov-btn" onClick={() => onLogs(s)}>Logs</button>}
             {s.type === 'docker' && <button className="hov-btn" title="Restart" onClick={() => onRestart(s)}>↻</button>}
           </div>
@@ -685,7 +809,7 @@ function ServicesTiles({ list, kind, onLogs, onRestart, onOpen }) {
   );
 }
 
-function ServicesList({ list, kind, onLogs, onRestart, onStop, onOpen }) {
+function ServicesList({ list, kind, onLogs, onRestart, onStop, onOpen, onEdit }) {
   return (
     <div className="svc-list">
       <div className="svc-list-head mono">
@@ -700,7 +824,7 @@ function ServicesList({ list, kind, onLogs, onRestart, onStop, onOpen }) {
       </div>
       {list.map(s => (
         <div key={s.name} className={`svc-row ${!s.isRunning ? 'is-stopped' : ''}`}>
-          {s.favicon ? <img src={s.favicon} alt="" style={{ width: '18px', height: '18px', borderRadius: '3px' }} onError={(e) => { e.target.style.display = 'none'; }} /> : <Favicon ch={(s.displayName || '?')[0].toUpperCase()} tag={s.type} />}
+          <ServiceIcon favicon={s.favicon} displayName={s.displayName} type={s.type} size={18} />
           <div className="svc-row-name">
             <span>{s.displayName}</span>
             <span className="tag mono">{s.type}</span>
@@ -712,6 +836,7 @@ function ServicesList({ list, kind, onLogs, onRestart, onStop, onOpen }) {
           <div><span className={`status-pill st-${s.isRunning ? 'running' : 'stopped'}`}><StatusDot status={s.isRunning ? 'running' : 'stopped'} /> {s.isRunning ? 'running' : 'stopped'}</span></div>
           <div className="svc-row-actions">
             {kind === 'web' && s.url && <button className="icon-btn" title="Open" onClick={() => onOpen(s)}>↗</button>}
+            <button className="icon-btn" title="Edit" onClick={() => onEdit(s)}>✎</button>
             {s.type === 'docker' && <button className="icon-btn" title="Logs" onClick={() => onLogs(s)}>≣</button>}
             {s.type === 'docker' && <button className="icon-btn" title="Restart" onClick={() => onRestart(s)}>↻</button>}
             {s.type === 'docker' && <button className="icon-btn" title="Stop" onClick={() => onStop(s)}>■</button>}
@@ -723,14 +848,14 @@ function ServicesList({ list, kind, onLogs, onRestart, onStop, onOpen }) {
   );
 }
 
-function ServicesPreview({ list, kind, onLogs, onOpen }) {
+function ServicesPreview({ list, kind, onLogs, onOpen, onEdit }) {
   return (
     <div className="svc-preview">
       {list.map(s => (
         <div key={s.name} className="svc-pcard">
           <div className="svc-pcard-thumb">
             <div className="pcard-stripes" />
-            <div className="pcard-glyph">{(s.displayName || '?')[0].toUpperCase()}</div>
+            <PreviewIcon favicon={s.favicon} displayName={s.displayName} />
             <span className={`status-pill st-${s.isRunning ? 'running' : 'stopped'} pcard-status`}><StatusDot status={s.isRunning ? 'running' : 'stopped'} /> {s.isRunning ? 'running' : 'stopped'}</span>
           </div>
           <div className="svc-pcard-body">
@@ -738,6 +863,7 @@ function ServicesPreview({ list, kind, onLogs, onOpen }) {
             <div className="svc-pcard-meta mono">{s.url || `:${s.port}`}</div>
             <div className="svc-pcard-actions">
               {kind === 'web' && s.url && <button className="btn-accent sm" onClick={() => onOpen(s)}>Open ↗</button>}
+              <button className="btn-ghost sm" onClick={() => onEdit(s)}>Edit</button>
               {s.type === 'docker' && <button className="btn-ghost sm" onClick={() => onLogs(s)}>Logs</button>}
             </div>
           </div>

@@ -134,27 +134,23 @@ export function CLIUsageTab() {
           
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16 }}>
             <StatusBadge status={claude.status || 'unknown'} />
-            {claude.status === 'limited' && claude.reset_estimate && (
-              <span style={{ fontSize: '0.85rem', color: '#f59e0b', fontWeight: 500 }}>
-                ⏱ {claude.reset_estimate}
-              </span>
-            )}
+            <span style={{ fontSize: '0.85rem', color: claude.status === 'limited' ? '#f59e0b' : '#64748b', fontWeight: 500 }}>
+              {claude.reset_estimate && claude.reset_estimate !== 'N/A' ? `⏱ ${claude.reset_estimate}` : ''}
+            </span>
           </div>
-          
+
           <div style={{ display: 'flex', justifyContent: 'center', marginBottom: 16 }}>
-            <UsageGauge percent={claude.quota_percent || 0} status={claude.status} label="quota remaining" />
+            <UsageGauge percent={claude.quota_percent || 0} status={claude.status} label="remaining (5h window)" />
           </div>
-          
+
           <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
             <div style={{ background: 'rgba(255,255,255,0.03)', borderRadius: 8, padding: 10 }}>
-              <div style={{ fontSize: '0.7rem', color: '#64748b' }}>Calls (24h)</div>
-              <div style={{ fontSize: '1rem', fontWeight: 500 }}>{claude.total_calls_24h || 0}</div>
+              <div style={{ fontSize: '0.7rem', color: '#64748b' }}>Used 5h</div>
+              <div style={{ fontSize: '1rem', fontWeight: 500 }}>{claude.utilization_5h != null ? `${claude.utilization_5h}%` : '--'}</div>
             </div>
             <div style={{ background: 'rgba(255,255,255,0.03)', borderRadius: 8, padding: 10 }}>
-              <div style={{ fontSize: '0.7rem', color: '#64748b' }}>Last Check</div>
-              <div style={{ fontSize: '1rem', fontWeight: 500 }}>
-                {claude.checked_at ? new Date(claude.checked_at).toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' }) : '--'}
-              </div>
+              <div style={{ fontSize: '0.7rem', color: '#64748b' }}>Used 7d</div>
+              <div style={{ fontSize: '1rem', fontWeight: 500 }}>{claude.utilization_7d != null ? `${claude.utilization_7d}%` : '--'}</div>
             </div>
           </div>
           

@@ -29,7 +29,6 @@ const TABS = [
   { id: 'docker',   label: 'Images',   glyph: '◈', section: 'services' },
   { id: 'code',     label: 'Code',     glyph: '⌘', section: 'shell' },
   { id: 'jobs',     label: 'Jobs',     glyph: '◫', section: 'shell' },
-  { id: 'stacks',   label: 'Stacks',   glyph: '◰', section: 'services' },
   { id: 'agents',   label: 'Agents',   glyph: '✦', section: 'services' },
   { id: 'samba',    label: 'Samba',    glyph: '◫', section: 'storage' },
   { id: 'files',    label: 'Files',    glyph: '▢', section: 'storage' },
@@ -60,6 +59,24 @@ const ACCENT_PRESETS = {
   '#f08a8a': { h: 18, c: 0.12, l: 0.72 },
 };
 const ACCENT_OPTS = Object.keys(ACCENT_PRESETS);
+
+function DockerTab() {
+  const [sub, setSub] = useState('images');
+  return (
+    <div>
+      <div style={{ display: 'flex', gap: 4, marginBottom: 16 }}>
+        {[{ id: 'images', label: '◈ Images' }, { id: 'stacks', label: '◰ Stacks' }].map(s => (
+          <button
+            key={s.id}
+            className={`tab-pill ${sub === s.id ? 'is-active' : ''}`}
+            onClick={() => setSub(s.id)}
+          >{s.label}</button>
+        ))}
+      </div>
+      {sub === 'images' ? <DockerImagesTab /> : <StacksTab />}
+    </div>
+  );
+}
 
 function Shell() {
   const [t, setTweak] = useTweaks(TWEAK_DEFAULTS);
@@ -183,8 +200,7 @@ function Shell() {
       case 'system':   return <SystemTab />;
       case 'web':      return <ServicesTab kind="web" cardStyle={t.cardStyle} />;
       case 'backend':  return <ServicesTab kind="backend" cardStyle={t.cardStyle} />;
-      case 'docker':   return <DockerImagesTab />;
-      case 'stacks':   return <StacksTab />;
+      case 'docker':   return <DockerTab />;
       case 'agents':   return <AgentsTab />;
       case 'samba':    return <SambaTab />;
       case 'files':    return <FilesTab />;
@@ -393,7 +409,7 @@ function pageSub(tab, hostName, hostUptime, updateCount) {
     case 'system':   return `${updateCount > 0 ? `${updateCount} updates · ` : ''}processes, logs, network, units, cron`;
     case 'web':      return `Auto-discovered web UIs and manually added services`;
     case 'backend':  return `Internal TCP/UDP services bound to ports`;
-    case 'docker':   return `Local Docker images · pull, remove, prune`;
+    case 'docker':   return `Local Docker images and Compose stacks`;
     case 'agents':   return `AI coding agents detected on this host`;
     case 'samba':    return `Shares, users, connections and service control`;
     case 'files':    return `Browse, edit, copy, move and manage files`;
