@@ -2063,7 +2063,7 @@ function FilesTab() {
   const [sortBy, setSortBy] = useState('name'); // name, size, mtime
   const [sortOrder, setSortOrder] = useState('asc'); // asc, desc
   const [viewMode, setViewMode] = useState('list'); // list, grid
-  const [showSidebar, setShowSidebar] = useState(true);
+  const [showSidebar, setShowSidebar] = useState(() => typeof window !== 'undefined' ? window.innerWidth >= 768 : true);
 
   // Multi-select, drag/drop, search overlay, image preview, rename, path editor, context menu
   const [multiSelected, setMultiSelected] = useState(() => new Set());
@@ -2562,7 +2562,7 @@ function FilesTab() {
       ) : (
         <>
           {/* Toolbar */}
-          <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap', background: 'var(--bg-2)', padding: '8px 12px', borderRadius: 8, border: '1px solid var(--line)' }}>
+          <div className="files-toolbar" style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap', background: 'var(--bg-2)', padding: '8px 12px', borderRadius: 8, border: '1px solid var(--line)' }}>
         {/* Toggle Sidebar */}
         <button
           type="button"
@@ -2575,7 +2575,7 @@ function FilesTab() {
         </button>
 
         {/* Path Crumbs */}
-        <div style={{ display: 'flex', gap: '2px', alignItems: 'center', flex: 1, minWidth: 0, fontFamily: 'var(--font-mono)', fontSize: 12, overflow: 'hidden', whiteSpace: 'nowrap', textOverflow: 'ellipsis' }}>
+        <div className="files-crumbs" style={{ display: 'flex', gap: '2px', alignItems: 'center', flex: 1, minWidth: 0, fontFamily: 'var(--font-mono)', fontSize: 12, overflowX: 'auto', overflowY: 'hidden', whiteSpace: 'nowrap' }}>
           {crumbs.map((c, i) => (
             <React.Fragment key={i}>
               {i > 0 && <span style={{ color: 'var(--text-3)', padding: '0 2px' }}>/</span>}
@@ -2638,7 +2638,7 @@ function FilesTab() {
         </div>
 
         {/* Mode Toggle */}
-        <div style={{ display: 'flex', border: '1px solid var(--line)', borderRadius: 6, overflow: 'hidden' }}>
+        <div className="files-view-toggle" style={{ display: 'flex', border: '1px solid var(--line)', borderRadius: 6, overflow: 'hidden' }}>
           <button
             type="button"
             className="btn-ghost sm"
@@ -2677,7 +2677,7 @@ function FilesTab() {
         <button type="button" className="btn-ghost sm" onClick={createFile}>+ File</button>
         <button type="button" className="btn-ghost sm" onClick={() => setOp({ type: 'mkdir', value: '' })}>+ Dir</button>
         <button type="button" className="btn-ghost sm" onClick={() => fileInputRef.current?.click()}>+ Upload</button>
-        <button type="button" className="btn-ghost sm" title="Open this folder in the Code workspace" onClick={() => window.dispatchEvent(new CustomEvent('open-workspace', { detail: { cwd: currentPath } }))}>⌘ Open in Code</button>
+        <button type="button" className="btn-ghost sm files-open-code" title="Open this folder in the Code workspace" onClick={() => window.dispatchEvent(new CustomEvent('open-workspace', { detail: { cwd: currentPath } }))}>⌘ Open in Code</button>
         <input
           type="file"
           ref={fileInputRef}
@@ -2726,10 +2726,10 @@ function FilesTab() {
       )}
 
       {/* Workspace container */}
-      <div style={{ display: 'flex', gap: 12, flex: 1 }}>
+      <div className="files-workspace" style={{ display: 'flex', gap: 12, flex: 1, minWidth: 0 }}>
         {/* Sidebar */}
         {showSidebar && (
-          <aside style={{ width: 220, flexShrink: 0, borderRight: '1px solid var(--line)', paddingRight: 12, overflowY: 'auto', overflowX: 'hidden', fontSize: 12, display: 'flex', flexDirection: 'column', gap: 16 }}>
+          <aside className="files-sidebar" style={{ width: 220, flexShrink: 0, borderRight: '1px solid var(--line)', paddingRight: 12, overflowY: 'auto', overflowX: 'hidden', fontSize: 12, display: 'flex', flexDirection: 'column', gap: 16 }}>
             {/* Favorites */}
             <div>
               <div style={{ fontSize: 10, fontWeight: 600, color: 'var(--text-3)', textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: 8, paddingLeft: 6 }}>
@@ -2831,7 +2831,7 @@ function FilesTab() {
           ) : (
             <>
               {/* Action bar — only show if item is selected */}
-              <div style={{ height: 38, display: 'flex', gap: 6, alignItems: 'center', padding: '0 10px',
+              <div className="files-action-bar" style={{ height: 38, display: 'flex', gap: 6, alignItems: 'center', padding: '0 10px',
                 background: 'var(--bg-2)', borderRadius: 6,
                 border: selectedItem ? '1px solid var(--line)' : '1px solid transparent',
                 visibility: selectedItem ? 'visible' : 'hidden' }}>
@@ -2840,7 +2840,7 @@ function FilesTab() {
                 </span>
                 {selectedItem && !selectedItem.isDir && <button type="button" className="btn-ghost sm" onClick={() => openFile(selectedItem)}>View</button>}
                 {selectedItem && !selectedItem.isDir && (
-                  <button type="button" className="btn-ghost sm" onClick={() => window.open(`/api/files/download?path=${encodeURIComponent(selectedItem.path)}`)}>
+                  <button type="button" className="btn-ghost sm files-action-extra" onClick={() => window.open(`/api/files/download?path=${encodeURIComponent(selectedItem.path)}`)}>
                     Download
                   </button>
                 )}
@@ -2852,8 +2852,8 @@ function FilesTab() {
                   const copyName = di > 0 && !selectedItem.isDir ? baseName.slice(0, di) + '_copy' + baseName.slice(di) : baseName + '_copy';
                   setOp({ type: 'copy', item: selectedItem, value: dir + '/' + copyName });
                 }}>Copy</button>}
-                {selectedItem && <button type="button" className="btn-ghost sm" onClick={() => setOp({ type: 'move', item: selectedItem, value: selectedItem.path })}>Move</button>}
-                {selectedItem && <button type="button" className="btn-ghost sm" onClick={() => {
+                {selectedItem && <button type="button" className="btn-ghost sm files-action-extra" onClick={() => setOp({ type: 'move', item: selectedItem, value: selectedItem.path })}>Move</button>}
+                {selectedItem && <button type="button" className="btn-ghost sm files-action-extra" onClick={() => {
                   const mode = prompt(`Permissions for "${selectedItem?.name}" (octal):`, '0755');
                   if (!mode) return;
                   axios.post('/api/samba/permissions', { path: selectedItem.path, mode })
@@ -2866,20 +2866,20 @@ function FilesTab() {
               {/* File list pane */}
               {viewMode === 'list' ? (
                 /* List View */
-                <div className="card" style={{ overflow: 'auto', flex: 1, display: 'flex', flexDirection: 'column' }}>
+                <div className="card files-list-card" style={{ overflow: 'auto', flex: 1, display: 'flex', flexDirection: 'column' }}>
                   {/* Header */}
-                  <div style={{ display: 'flex', alignItems: 'center', padding: '6px 12px', borderBottom: '1px solid var(--line)',
+                  <div className="files-list-head" style={{ display: 'flex', alignItems: 'center', padding: '6px 12px', borderBottom: '1px solid var(--line)',
                     color: 'var(--text-3)', fontSize: 10, textTransform: 'uppercase', letterSpacing: '0.06em', userSelect: 'none', flexShrink: 0 }}>
                     <div style={{ width: 22, flexShrink: 0 }} />
                     <div style={{ flex: 1, minWidth: 0, cursor: 'pointer', display: 'flex', alignItems: 'center', gap: 4 }} onClick={() => { setSortBy('name'); setSortOrder(prev => prev === 'asc' ? 'desc' : 'asc'); }}>
                       Name {sortBy === 'name' && (sortOrder === 'asc' ? '▴' : '▾')}
                     </div>
-                    <div style={{ width: 78, flexShrink: 0, textAlign: 'right', paddingRight: 8, cursor: 'pointer' }} onClick={() => { setSortBy('size'); setSortOrder(prev => prev === 'asc' ? 'desc' : 'asc'); }}>
+                    <div className="col-size" style={{ width: 78, flexShrink: 0, textAlign: 'right', paddingRight: 8, cursor: 'pointer' }} onClick={() => { setSortBy('size'); setSortOrder(prev => prev === 'asc' ? 'desc' : 'asc'); }}>
                       Size {sortBy === 'size' && (sortOrder === 'asc' ? '▴' : '▾')}
                     </div>
-                    <div style={{ width: 78, flexShrink: 0, paddingLeft: 8 }}>Owner</div>
-                    <div style={{ width: 88, flexShrink: 0, paddingLeft: 8 }}>Mode</div>
-                    <div style={{ width: 118, flexShrink: 0, paddingLeft: 8, cursor: 'pointer' }} onClick={() => { setSortBy('mtime'); setSortOrder(prev => prev === 'asc' ? 'desc' : 'asc'); }}>
+                    <div className="col-owner" style={{ width: 78, flexShrink: 0, paddingLeft: 8 }}>Owner</div>
+                    <div className="col-mode" style={{ width: 88, flexShrink: 0, paddingLeft: 8 }}>Mode</div>
+                    <div className="col-mtime" style={{ width: 118, flexShrink: 0, paddingLeft: 8, cursor: 'pointer' }} onClick={() => { setSortBy('mtime'); setSortOrder(prev => prev === 'asc' ? 'desc' : 'asc'); }}>
                       Modified {sortBy === 'mtime' && (sortOrder === 'asc' ? '▴' : '▾')}
                     </div>
                   </div>
@@ -2897,10 +2897,10 @@ function FilesTab() {
                         <div style={{ width: 22, flexShrink: 0, color: 'var(--accent)', fontSize: 14 }}>📁</div>
                         <div style={{ flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
                           color: 'var(--accent)', fontWeight: 500 }}>{f.name}/</div>
-                        <div style={{ width: 78, flexShrink: 0, textAlign: 'right', paddingRight: 8, fontFamily: 'var(--font-mono)', fontSize: 11, color: 'var(--text-3)' }}>—</div>
-                        <div style={{ width: 78, flexShrink: 0, paddingLeft: 8, fontFamily: 'var(--font-mono)', fontSize: 11, color: 'var(--text-3)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{f.owner}</div>
-                        <div style={{ width: 88, flexShrink: 0, paddingLeft: 8, fontFamily: 'var(--font-mono)', fontSize: 11, color: 'var(--text-3)' }}>{f.perm}</div>
-                        <div style={{ width: 118, flexShrink: 0, paddingLeft: 8, fontSize: 11, color: 'var(--text-3)' }}>{f.mtime}</div>
+                        <div className="col-size" style={{ width: 78, flexShrink: 0, textAlign: 'right', paddingRight: 8, fontFamily: 'var(--font-mono)', fontSize: 11, color: 'var(--text-3)' }}>—</div>
+                        <div className="col-owner" style={{ width: 78, flexShrink: 0, paddingLeft: 8, fontFamily: 'var(--font-mono)', fontSize: 11, color: 'var(--text-3)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{f.owner}</div>
+                        <div className="col-mode" style={{ width: 88, flexShrink: 0, paddingLeft: 8, fontFamily: 'var(--font-mono)', fontSize: 11, color: 'var(--text-3)' }}>{f.perm}</div>
+                        <div className="col-mtime" style={{ width: 118, flexShrink: 0, paddingLeft: 8, fontSize: 11, color: 'var(--text-3)' }}>{f.mtime}</div>
                       </div>
                     ))}
 
@@ -2913,10 +2913,10 @@ function FilesTab() {
                           borderBottom: '1px solid var(--line-2)' }}>
                         <div style={{ width: 22, flexShrink: 0, color: fileColor(f.name), fontSize: 14 }}>{fileIcon(f.name)}</div>
                         <div style={{ flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{f.name}</div>
-                        <div style={{ width: 78, flexShrink: 0, textAlign: 'right', paddingRight: 8, fontFamily: 'var(--font-mono)', fontSize: 11, color: 'var(--text-3)' }}>{f.size}</div>
-                        <div style={{ width: 78, flexShrink: 0, paddingLeft: 8, fontFamily: 'var(--font-mono)', fontSize: 11, color: 'var(--text-3)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{f.owner}</div>
-                        <div style={{ width: 88, flexShrink: 0, paddingLeft: 8, fontFamily: 'var(--font-mono)', fontSize: 11, color: 'var(--text-3)' }}>{f.perm}</div>
-                        <div style={{ width: 118, flexShrink: 0, paddingLeft: 8, fontSize: 11, color: 'var(--text-3)' }}>{f.mtime}</div>
+                        <div className="col-size" style={{ width: 78, flexShrink: 0, textAlign: 'right', paddingRight: 8, fontFamily: 'var(--font-mono)', fontSize: 11, color: 'var(--text-3)' }}>{f.size}</div>
+                        <div className="col-owner" style={{ width: 78, flexShrink: 0, paddingLeft: 8, fontFamily: 'var(--font-mono)', fontSize: 11, color: 'var(--text-3)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{f.owner}</div>
+                        <div className="col-mode" style={{ width: 88, flexShrink: 0, paddingLeft: 8, fontFamily: 'var(--font-mono)', fontSize: 11, color: 'var(--text-3)' }}>{f.perm}</div>
+                        <div className="col-mtime" style={{ width: 118, flexShrink: 0, paddingLeft: 8, fontSize: 11, color: 'var(--text-3)' }}>{f.mtime}</div>
                       </div>
                     ))}
 

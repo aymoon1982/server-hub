@@ -2451,3 +2451,103 @@ input, textarea, select { font-family: inherit; font-size: inherit; color: var(-
   .kpi-val { font-size: 18px; }
   .ws-tb-label { display: none !important; }
 }
+
+/* ──────────────────────────────────────────────────────────────────────────
+   MOBILE v3 — Files tab, log overflow, card arrangement
+   ────────────────────────────────────────────────────────────────────────── */
+@media (max-width: 768px) {
+  /* Files tab — sidebar hidden by default (state inits to false on mobile,
+     this is a defense in depth in case user toggled it then resized) */
+  .files-workspace { gap: 6px !important; position: relative; }
+  .files-sidebar {
+    position: absolute;
+    top: 0;
+    left: 0;
+    z-index: 50;
+    background: var(--bg);
+    border: 1px solid var(--line);
+    border-radius: 8px;
+    padding: 12px !important;
+    box-shadow: 0 6px 20px rgba(0,0,0,0.4);
+    max-height: 60vh;
+    width: 80vw !important;
+    max-width: 280px;
+  }
+
+  /* Files toolbar — compact: hide Open in Code & view toggle, shrink buttons */
+  .files-toolbar { padding: 6px 8px !important; gap: 6px !important; }
+  .files-toolbar .files-open-code { display: none !important; }
+  .files-toolbar .files-view-toggle { display: none !important; }
+  .files-toolbar .btn-ghost.sm { padding: 5px 8px !important; font-size: 11px !important; }
+  .files-toolbar .files-crumbs {
+    order: 99;
+    flex-basis: 100% !important;
+    width: 100%;
+    border-top: 1px solid var(--line);
+    padding-top: 6px;
+    margin-top: 2px;
+  }
+
+  /* Files list — hide Owner/Mode columns on mobile to fit name */
+  .files-list-head .col-owner,
+  .files-list-head .col-mode,
+  .file-row .col-owner,
+  .file-row .col-mode { display: none !important; }
+  .files-list-head .col-mtime,
+  .file-row .col-mtime { width: 80px !important; font-size: 10px !important; }
+  .files-list-head .col-size,
+  .file-row .col-size { width: 60px !important; }
+  /* Reset the deep-pass min-width which is too wide for our reduced columns */
+  .files-list, .files-list-card { overflow-x: auto; }
+  .file-row { min-width: 0 !important; }
+
+  /* Files action bar — horizontal scroll, hide secondary actions */
+  .files-action-bar {
+    overflow-x: auto !important;
+    height: auto !important;
+    min-height: 38px;
+    -webkit-overflow-scrolling: touch;
+    scrollbar-width: none;
+  }
+  .files-action-bar::-webkit-scrollbar { display: none; }
+  .files-action-bar .files-action-extra { display: none !important; }
+  .files-action-bar .btn-ghost.sm { padding: 4px 8px !important; font-size: 11px !important; flex-shrink: 0; }
+
+  /* Log boxes — reduce font, wrap long lines, cap height */
+  .logbox {
+    font-size: 10px !important;
+    max-height: 250px !important;
+    white-space: pre-wrap !important;
+    word-break: break-all !important;
+    padding: 8px !important;
+  }
+
+  /* All inline-styled <pre> blocks for logs */
+  pre[style*="maxHeight"], pre[style*="max-height"] {
+    white-space: pre-wrap !important;
+    word-break: break-all !important;
+    font-size: 10px !important;
+    max-width: 100% !important;
+  }
+
+  /* Speedtest / Traffic cards using minmax(320px) — ensure single column */
+  [style*="minmax(320px"] {
+    grid-template-columns: 1fr !important;
+  }
+
+  /* Temperature grid using minmax(260px) — also single column on mobile */
+  [style*="minmax(260px"] {
+    grid-template-columns: 1fr !important;
+  }
+
+  /* Features tab cards wrapping tables — already have overflow:auto inline,
+     but ensure horizontal scroll is reachable */
+  .proc-table { font-size: 10.5px !important; }
+}
+
+/* Extra-narrow phones (≤380px) — Files tab even more compact */
+@media (max-width: 380px) {
+  .files-list-head .col-mtime,
+  .file-row .col-mtime { display: none !important; }
+  .files-toolbar .btn-ghost.sm { padding: 4px 6px !important; font-size: 10.5px !important; }
+}
