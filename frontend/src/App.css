@@ -2042,170 +2042,17 @@ input, textarea, select { font-family: inherit; font-size: inherit; color: var(-
   }
 }
 
-/* ─── Mobile / Responsive ──────────────────────────────────────────────────
+/* ──────────────────────────────────────────────────────────────────────────
+   Mobile / Responsive  —  v4 (zero horizontal scroll, card layouts)
    Breakpoints: ≤768px = mobile, 769–1024px = tablet
+   Rule: NO horizontal scrolling anywhere in tab content. Only the top
+   tab bar may scroll horizontally. Every table → vertically-stacked cards.
    ────────────────────────────────────────────────────────────────────────── */
 
 /* Shell-tabs: always in DOM, hidden by default in sidebar mode on desktop */
 .shell-tabs--sidebar-hidden { display: none; }
 
-/* ── Mobile (≤768px) ─────────────────────────────────────────────────────── */
-@media (max-width: 768px) {
-
-  /* Switch sidebar to topbar-like layout */
-  .shell[data-nav="sidebar"] {
-    grid-template-columns: 1fr;
-    grid-template-rows: 48px 44px 1fr;
-    grid-template-areas:
-      "topbar"
-      "tabs"
-      "main";
-  }
-  .shell-sidebar { display: none !important; }
-
-  /* Show the tab bar in sidebar mode on mobile */
-  .shell-tabs--sidebar-hidden { display: flex; }
-
-  /* Scrollable tab bar — no scrollbar visible */
-  .shell-tabs {
-    overflow-x: auto;
-    -webkit-overflow-scrolling: touch;
-    scrollbar-width: none;
-    flex-wrap: nowrap;
-  }
-  .shell-tabs::-webkit-scrollbar { display: none; }
-  .shell-tabs .tab-pill { padding: 8px 10px; font-size: 12px; }
-  .shell-tabs .tab-pill .nav-glyph { display: none; }
-  .shell-tabs-sep { display: none; }
-
-  /* Compact top bar */
-  .shell-top { padding: 0 8px; gap: 6px; }
-  .top-search { max-width: none; }
-  .top-search .kbd { display: none; }
-  .top-search input::placeholder { font-size: 12px; }
-
-  /* Hide verbose top-bar items on narrow screens */
-  .term-launch { display: none; }
-  .theme-toggle { display: none; }
-
-  /* Larger touch targets for icon buttons */
-  .icon-btn { width: 36px; height: 36px; }
-  .icon-btn-top { width: 36px; height: 36px; }
-  .nav-item { min-height: 44px; }
-  .tab-pill { min-height: 44px; }
-
-  /* Page head: stack label + subtitle */
-  .page-head { flex-direction: column; gap: 2px; align-items: flex-start; }
-  .page-head .page-sub { display: none; }
-
-  /* ── Overview / Bento ───── */
-  .bento-row.kpis { grid-template-columns: repeat(2, 1fr); }
-  .bento-row.main {
-    grid-template-columns: 1fr;
-    grid-template-areas:
-      "pin"
-      "disk"
-      "counts"
-      "events"
-      "host";
-  }
-  .pinned-grid { grid-template-columns: 1fr 1fr; }
-
-  /* ── Services / tables with many columns ─────
-     Wrap in a scroll container so content doesn't clip */
-  .svc-list { overflow-x: auto; -webkit-overflow-scrolling: touch; }
-  .svc-list-head,
-  .svc-row { min-width: 620px; }
-
-  /* Services toolbar */
-  .services-toolbar { flex-wrap: wrap; }
-  .toolbar-actions { margin-left: 0; width: 100%; justify-content: flex-start; }
-
-  /* ── Resource grid ───── */
-  .res-grid {
-    grid-template-columns: 1fr 1fr;
-    grid-template-areas:
-      "cpu  ram"
-      "net  gpu"
-      "disk disk"
-      "proc proc";
-  }
-
-  /* Core grid: fewer columns on mobile */
-  .core-grid { grid-template-columns: repeat(8, 1fr); }
-
-  /* ── Files pane ───── */
-  .files-pane { grid-template-columns: 1fr; }
-  .files-tree { display: none; }
-  .files-list { overflow-x: auto; -webkit-overflow-scrolling: touch; }
-  .files-list-head,
-  .file-row { min-width: 500px; }
-
-  /* ── System / Updates ───── */
-  .updates-head {
-    grid-template-columns: 1fr;
-    gap: 10px;
-  }
-  .updates-stats { flex-wrap: wrap; gap: 4px; }
-  .updates-actions { justify-content: flex-start; }
-  .updates-list { overflow-x: auto; -webkit-overflow-scrolling: touch; }
-  .updates-list-head,
-  .update-row { min-width: 580px; }
-
-  /* ── Samba ───── */
-  .samba-head { flex-direction: column; align-items: flex-start; gap: 8px; }
-  .samba-table { display: block; overflow-x: auto; -webkit-overflow-scrolling: touch; }
-
-  /* ── SSH ───── */
-  .ssh-head { flex-direction: column; align-items: flex-start; gap: 4px; }
-
-  /* ── Agents ───── */
-  .agents-intro { flex-direction: column; align-items: flex-start; gap: 4px; }
-
-  /* ── Forms ───── */
-  .form-cols { grid-template-columns: 1fr; }
-  .form-grid { grid-template-columns: 1fr; }
-  .search { min-width: unset; width: 100%; max-width: none; }
-
-  /* ── Agent chat body ───── */
-  .agent-body { padding: 16px 16px; }
-
-  /* ── Session overlay logs ───── */
-  .logs-line { grid-template-columns: 90px 1fr; }
-  .logs-line > *:nth-child(3) { display: none; } /* hide level col */
-
-  /* ── Browse modal list ───── */
-  .browse-list { overflow-x: auto; -webkit-overflow-scrolling: touch; }
-  .browse-head,
-  .browse-row { min-width: 500px; }
-
-  /* ── Command palette ───── */
-  .palette-backdrop { padding-top: 5vh; padding-left: 12px; padding-right: 12px; }
-  .palette { max-width: 100%; }
-  .palette-hint,
-  .palette-kind { display: none; }
-  .palette-item { grid-template-columns: 24px 1fr; }
-
-  /* ── Terminal overlay ───── */
-  .term-overlay { left: 8px; right: 8px; bottom: 8px; }
-  .shell[data-nav="sidebar"] .term-overlay { left: 8px; }
-  .shell[data-nav="sidebar"][data-collapsed="true"] .term-overlay { left: 8px; }
-
-  /* ── Session dock ───── */
-  .sess-dock { right: 8px; bottom: 8px; }
-
-  /* ── Modals ───── */
-  .modal-backdrop { padding: 12px; }
-  .modal-sm,
-  .modal-md,
-  .modal-lg,
-  .modal-xl { max-width: 100%; }
-  .modal-head { padding: 16px 16px 10px; }
-  .modal-body { padding: 14px 16px; }
-  .modal-foot { padding: 12px 16px; }
-}
-
-/* ── Tablet (769px–1024px) ────────────────────────────────────────────────── */
+/* ── Tablet (769px–1024px) — keep desktop tables, only stack overview ───── */
 @media (max-width: 1024px) and (min-width: 769px) {
   .bento-row.kpis { grid-template-columns: repeat(2, 1fr); }
   .bento-row.main {
@@ -2226,23 +2073,21 @@ input, textarea, select { font-family: inherit; font-size: inherit; color: var(-
   .form-cols { grid-template-columns: 1fr; }
 }
 
-/* ──────────────────────────────────────────────────────────────────────────
-   DEEP MOBILE PASS — second audit, tab-by-tab overflow fixes
-   These rules override component-level <style> tags via specificity/!important
-   ────────────────────────────────────────────────────────────────────────── */
+/* ── Mobile (≤768px) ─────────────────────────────────────────────────────── */
 @media (max-width: 768px) {
 
-  /* ── Universal containment ─────────────────────────────────────────── */
+  /* ── Universal containment — no horizontal scroll anywhere ──────────── */
+  html, body, #root { overflow-x: hidden; max-width: 100vw; }
   .shell-main {
     padding: 10px;
     overflow-x: hidden;
     max-width: 100vw;
   }
   .shell-main > * { max-width: 100%; min-width: 0; }
-  .card { padding: 12px; min-width: 0; max-width: 100%; }
+  .card { padding: 12px; min-width: 0; max-width: 100%; overflow: hidden; }
   .card > * { min-width: 0; max-width: 100%; }
 
-  /* Break long text everywhere */
+  /* Break long text everywhere — no horizontal overflow from words */
   .card, .card *, .tab-pill, .nav-item, .chip, .tag,
   .svc-tile-name, .svc-tile-meta, .svc-pcard-name, .svc-pcard-meta,
   .agent-name, .agent-meta, .agent-path,
@@ -2255,37 +2100,340 @@ input, textarea, select { font-family: inherit; font-size: inherit; color: var(-
     min-width: 0;
   }
 
-  /* ── All tables: horizontal scroll wrapper ─────────────────────────── */
-  .proc-table,
-  .samba-table,
-  table {
-    display: block;
+  /* ── Layout: switch sidebar to topbar-like on mobile ──────────────── */
+  .shell[data-nav="sidebar"] {
+    grid-template-columns: 1fr;
+    grid-template-rows: 48px 44px 1fr;
+    grid-template-areas:
+      "topbar"
+      "tabs"
+      "main";
+  }
+  .shell-sidebar { display: none !important; }
+  .shell-tabs--sidebar-hidden { display: flex; }
+
+  /* Top tab bar — ONLY horizontal scroll allowed on the page */
+  .shell-tabs {
     overflow-x: auto;
     -webkit-overflow-scrolling: touch;
-    max-width: 100%;
-    white-space: nowrap;
+    scrollbar-width: none;
+    flex-wrap: nowrap;
+    padding: 0 8px;
   }
-  .proc-table thead, .proc-table tbody,
-  .samba-table thead, .samba-table tbody {
-    display: table;
-    width: max-content;
-    min-width: 100%;
-  }
-  .proc-table th, .proc-table td,
-  .samba-table th, .samba-table td {
-    white-space: nowrap;
-  }
+  .shell-tabs::-webkit-scrollbar { display: none; }
+  .shell-tabs .tab-pill { padding: 8px 10px; font-size: 12px; flex-shrink: 0; }
+  .shell-tabs .tab-pill .nav-glyph { display: none; }
+  .shell-tabs-sep { display: none; }
 
-  /* ── pre / code blocks ─────────────────────────────────────────────── */
-  pre, code {
-    max-width: 100%;
+  /* Compact top bar */
+  .shell-top { padding: 0 8px; gap: 6px; }
+  .top-search { max-width: none; }
+  .top-search .kbd { display: none; }
+  .top-search input::placeholder { font-size: 12px; }
+  .term-launch { display: none; }
+  .theme-toggle { display: none; }
+
+  /* Larger touch targets */
+  .icon-btn { width: 36px; height: 36px; }
+  .icon-btn-top { width: 36px; height: 36px; }
+  .nav-item { min-height: 44px; }
+  .tab-pill { min-height: 44px; }
+
+  /* Page head: stack label + subtitle */
+  .page-head { flex-direction: column; gap: 2px; align-items: flex-start; }
+  .page-head .page-sub { display: none; }
+
+  /* ── Subnav — horizontal scroll allowed (it's a tab bar) ──────────── */
+  .subnav {
     overflow-x: auto;
-    word-break: break-word;
-    white-space: pre-wrap;
+    -webkit-overflow-scrolling: touch;
+    scrollbar-width: none;
+    flex-wrap: nowrap;
+    white-space: nowrap;
   }
-  .logbox { font-size: 10.5px; padding: 10px; }
+  .subnav::-webkit-scrollbar { display: none; }
+  .subnav-item { padding: 8px 10px; font-size: 12px; flex-shrink: 0; }
 
-  /* ── Agent Jobs (aj-) — pane needs to stack on mobile ──────────────── */
+  /* ── Overview / Bento ─────────────────────────────────────────────── */
+  .bento-row.kpis { grid-template-columns: repeat(2, 1fr); }
+  .bento-row.main {
+    grid-template-columns: 1fr;
+    grid-template-areas:
+      "pin"
+      "disk"
+      "counts"
+      "events"
+      "host";
+  }
+  .pinned-grid { grid-template-columns: 1fr 1fr; }
+  .kpi { padding: 12px; }
+  .kpi-val { font-size: 22px; }
+
+  /* ── Resource grid ────────────────────────────────────────────────── */
+  .res-grid {
+    grid-template-columns: 1fr 1fr;
+    grid-template-areas:
+      "cpu  ram"
+      "net  gpu"
+      "disk disk"
+      "proc proc";
+  }
+  .core-grid { grid-template-columns: repeat(8, 1fr); }
+
+  /* ── Services / SSH / Agent / Share grids — single column ────────── */
+  .svc-tiles { grid-template-columns: 1fr; }
+  .svc-preview { grid-template-columns: 1fr; }
+  .ssh-grid { grid-template-columns: 1fr; }
+  .agent-grid { grid-template-columns: 1fr; }
+  .share-grid { grid-template-columns: 1fr; }
+
+  /* Toolbar wrapping */
+  .services-toolbar,
+  .samba-toolbar,
+  .files-toolbar,
+  .updates-actions,
+  .filter-chips {
+    flex-wrap: wrap;
+    gap: 6px;
+  }
+  .toolbar-actions { margin-left: 0; width: 100%; justify-content: flex-start; }
+  .filter-chips { width: 100%; }
+  .search { min-width: 0 !important; width: 100% !important; max-width: 100% !important; }
+  .search.small { min-width: 0 !important; }
+
+  /* ════════════════════════════════════════════════════════════════════
+     CARD LAYOUTS — every table becomes vertically-stacked cards
+     The pattern: hide the header, make each row a flex column with a
+     border + padding. Cells inside the row stack on their own line.
+     ════════════════════════════════════════════════════════════════════ */
+
+  /* ── Services list (svc-list) ─────────────────────────────────────── */
+  .svc-list {
+    background: transparent;
+    border: 0;
+    overflow: visible;
+    display: flex; flex-direction: column;
+    gap: 8px;
+  }
+  .svc-list-head { display: none !important; }
+  .svc-row {
+    display: flex !important;
+    flex-direction: column;
+    gap: 6px;
+    padding: 12px;
+    border: 1px solid var(--line);
+    border-radius: 8px;
+    background: var(--surface);
+    min-width: 0 !important;
+    max-width: 100%;
+    font-size: 12.5px;
+  }
+  .svc-row:hover { background: var(--surface); }
+  .svc-row > * { width: 100%; min-width: 0; }
+  .svc-row > *:nth-child(1) { width: auto; }                /* ServiceIcon */
+  .svc-row-name { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+  .svc-row-name > span:first-child { font-weight: 600; font-size: 13px; }
+  .svc-row > *:nth-child(5),
+  .svc-row > *:nth-child(6) { font-size: 11px; color: var(--text-3); }
+  .svc-row > *:nth-child(3)::before { content: "address "; opacity: 0.6; text-transform: uppercase; font-size: 9.5px; letter-spacing: 0.06em; margin-right: 4px; }
+  .svc-row > *:nth-child(4)::before { content: "container "; opacity: 0.6; text-transform: uppercase; font-size: 9.5px; letter-spacing: 0.06em; margin-right: 4px; }
+  .svc-row > *:nth-child(5)::before { content: "CPU "; opacity: 0.6; text-transform: uppercase; font-size: 9.5px; letter-spacing: 0.06em; margin-right: 4px; }
+  .svc-row > *:nth-child(6)::before { content: "MEM "; opacity: 0.6; text-transform: uppercase; font-size: 9.5px; letter-spacing: 0.06em; margin-right: 4px; }
+  .svc-row > .svc-row-actions {
+    display: flex !important; gap: 4px;
+    justify-content: flex-start !important;
+    padding-top: 6px; border-top: 1px solid var(--line-2);
+  }
+
+  /* ── Files list (file-row) — inline-styled flex rows in tabs.jsx ──── */
+  .files-list, .files-list-card {
+    overflow: visible !important;
+  }
+  .files-list-head { display: none !important; }
+  .file-row {
+    display: grid !important;
+    grid-template-columns: 22px 1fr;
+    grid-template-areas:
+      "icon name"
+      "size size"
+      "mtime mtime";
+    align-items: center;
+    gap: 4px 6px !important;
+    padding: 10px 12px !important;
+    border: 1px solid var(--line) !important;
+    border-radius: 8px !important;
+    margin-bottom: 6px !important;
+    background: var(--surface);
+    min-width: 0 !important;
+  }
+  .file-row.is-sel { background: var(--accent-soft); }
+  .file-row > *:nth-child(1) { grid-area: icon; width: auto !important; }
+  .file-row > *:nth-child(2) { grid-area: name; text-align: left !important; padding-right: 0 !important; min-width: 0 !important; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .file-row > .col-size  { grid-area: size; text-align: left !important; width: auto !important; padding: 0 !important; font-size: 11px !important; }
+  .file-row > .col-owner { display: none !important; }
+  .file-row > .col-mode  { display: none !important; }
+  .file-row > .col-mtime { grid-area: mtime; width: auto !important; padding: 0 !important; font-size: 11px !important; color: var(--text-3) !important; }
+  .file-row > .col-size::before  { content: "size "; opacity: 0.6; text-transform: uppercase; font-size: 9.5px; letter-spacing: 0.06em; margin-right: 4px; }
+  .file-row > .col-mtime::before { content: "modified "; opacity: 0.6; text-transform: uppercase; font-size: 9.5px; letter-spacing: 0.06em; margin-right: 4px; }
+
+  /* ── Updates list (update-row) ────────────────────────────────────── */
+  .updates-list { overflow: visible !important; }
+  .updates-list-head { display: none !important; }
+  .update-row {
+    display: grid !important;
+    grid-template-columns: 22px 1fr auto;
+    grid-template-areas:
+      "chk   name   kind"
+      "cur   cur    cur"
+      "next  next   next"
+      "repo  repo   repo";
+    gap: 4px 8px;
+    padding: 12px;
+    border: 1px solid var(--line);
+    border-radius: 8px;
+    margin-bottom: 6px;
+    background: var(--surface);
+    min-width: 0 !important;
+    font-size: 12px;
+    align-items: center;
+  }
+  .update-row > *:nth-child(1) { grid-area: chk; }
+  .update-row > *:nth-child(2) { grid-area: name; text-align: left; font-size: 13px; font-weight: 600; }
+  .update-row > *:nth-child(3) { grid-area: cur; color: var(--text-3); }
+  .update-row > *:nth-child(3)::before { content: "current "; opacity: 0.6; text-transform: uppercase; font-size: 9.5px; letter-spacing: 0.06em; margin-right: 4px; }
+  .update-row > *:nth-child(4) { grid-area: next; color: var(--ok); }
+  .update-row > *:nth-child(4)::before { content: "available "; opacity: 0.6; text-transform: uppercase; font-size: 9.5px; letter-spacing: 0.06em; margin-right: 4px; color: var(--text-3); }
+  .update-row > *:nth-child(5) { grid-area: repo; font-size: 10px !important; color: var(--text-3); }
+  .update-row > *:nth-child(6) { grid-area: kind; justify-self: end; }
+
+  /* ── Browse list (browse-row) — Docker volumes browse ─────────────── */
+  .browse-list { overflow: visible !important; max-height: none !important; }
+  .browse-head { display: none !important; }
+  .browse-row {
+    display: grid !important;
+    grid-template-columns: 22px 1fr auto;
+    grid-template-areas:
+      "icon  name  act"
+      "size  size  size"
+      "mtime mtime mtime"
+      "perm  perm  perm";
+    gap: 4px 8px;
+    padding: 10px 12px;
+    border: 1px solid var(--line);
+    border-radius: 8px;
+    margin-bottom: 6px;
+    background: var(--surface);
+    min-width: 0 !important;
+    align-items: center;
+  }
+  .browse-row > *:nth-child(1) { grid-area: icon; }
+  .browse-row > *:nth-child(2) { grid-area: name; font-weight: 500; font-size: 13px; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .browse-row > *:nth-child(3) { grid-area: size; font-size: 11px; }
+  .browse-row > *:nth-child(3)::before { content: "size "; opacity: 0.6; text-transform: uppercase; font-size: 9.5px; letter-spacing: 0.06em; margin-right: 4px; }
+  .browse-row > *:nth-child(4) { grid-area: mtime; font-size: 11px; color: var(--text-3); }
+  .browse-row > *:nth-child(4)::before { content: "modified "; opacity: 0.6; text-transform: uppercase; font-size: 9.5px; letter-spacing: 0.06em; margin-right: 4px; }
+  .browse-row > *:nth-child(5) { grid-area: perm; font-size: 11px; color: var(--text-3); }
+  .browse-row > *:nth-child(5)::before { content: "perms "; opacity: 0.6; text-transform: uppercase; font-size: 9.5px; letter-spacing: 0.06em; margin-right: 4px; }
+  .browse-row > .browse-row-actions { grid-area: act; display: flex; gap: 4px; justify-self: end; }
+
+  /* ── Real <table>s (proc-table, samba-table) — cards ──────────────── */
+  /* Every row becomes a card. Headers hidden. Cells stack vertically. */
+  .proc-table,
+  .samba-table,
+  table.proc-table,
+  table.samba-table {
+    display: block !important;
+    width: 100% !important;
+    max-width: 100% !important;
+    border-collapse: separate !important;
+    border-spacing: 0 6px !important;
+    overflow: visible !important;
+    white-space: normal !important;
+  }
+  .proc-table thead, .samba-table thead { display: none !important; }
+  .proc-table tbody, .samba-table tbody { display: block !important; width: 100% !important; }
+  .proc-table tr, .samba-table tr {
+    display: flex !important;
+    flex-direction: column;
+    padding: 10px 12px;
+    border: 1px solid var(--line) !important;
+    border-radius: 8px;
+    background: var(--surface);
+    margin-bottom: 6px;
+    width: 100% !important;
+    min-width: 0 !important;
+    box-sizing: border-box;
+  }
+  .proc-table tr:hover td, .samba-table tr:hover td { background: transparent !important; }
+  .proc-table td, .samba-table td,
+  .proc-table th, .samba-table th {
+    display: block !important;
+    padding: 3px 0 !important;
+    border: 0 !important;
+    white-space: normal !important;
+    word-break: break-word;
+    text-align: left !important;
+    width: auto !important;
+    max-width: 100%;
+    font-size: 12px;
+  }
+  /* First cell in each row gets stronger emphasis (acts as title) */
+  .proc-table tbody tr td:first-child,
+  .samba-table tbody tr td:first-child {
+    font-weight: 600;
+    font-size: 13px;
+    padding-bottom: 4px !important;
+    border-bottom: 1px solid var(--line-2) !important;
+    margin-bottom: 4px;
+  }
+  /* Last cell often holds action buttons — flex it row-wise */
+  .proc-table tbody tr td:last-child,
+  .samba-table tbody tr td:last-child {
+    display: flex !important;
+    gap: 4px;
+    flex-wrap: wrap;
+    padding-top: 6px !important;
+  }
+  .row-actions { display: flex; gap: 4px; flex-wrap: wrap; justify-content: flex-start !important; }
+
+  /* ── Samba header & other ─────────────────────────────────────────── */
+  .samba-head { flex-direction: column; align-items: flex-start; gap: 8px; }
+  .ssh-head { flex-direction: column; align-items: flex-start; gap: 4px; }
+  .agents-intro { flex-direction: column; align-items: flex-start; gap: 4px; }
+  .form-cols { grid-template-columns: 1fr; }
+  .form-grid { grid-template-columns: 1fr; }
+
+  /* ── Updates: header & stats ──────────────────────────────────────── */
+  .updates-head { grid-template-columns: 1fr; gap: 10px; }
+  .updates-stats { flex-wrap: wrap; gap: 4px; }
+  .updates-actions { justify-content: flex-start; }
+  .updates-stat { min-width: 60px; padding: 6px 10px; }
+  .updates-stat-num { font-size: 18px; }
+
+  /* ── pre / code / log boxes — wrap, never horizontal scroll ───────── */
+  pre, code {
+    max-width: 100% !important;
+    overflow-x: hidden !important;
+    word-break: break-word !important;
+    white-space: pre-wrap !important;
+  }
+  .logbox {
+    font-size: 10px !important;
+    max-height: 250px !important;
+    white-space: pre-wrap !important;
+    word-break: break-all !important;
+    padding: 8px !important;
+    overflow-x: hidden !important;
+  }
+  pre[style*="maxHeight"], pre[style*="max-height"] {
+    white-space: pre-wrap !important;
+    word-break: break-all !important;
+    font-size: 10px !important;
+    max-width: 100% !important;
+    overflow-x: hidden !important;
+  }
+
+  /* ── Agent Jobs — stack panes, hide sidebar by default ────────────── */
   .aj-root { flex-direction: column !important; height: auto !important; min-height: 100vh; }
   .aj-list-pane {
     width: 100% !important;
@@ -2301,19 +2449,19 @@ input, textarea, select { font-family: inherit; font-size: inherit; color: var(-
     max-width: calc(100vw - 24px) !important;
   }
   .aj-modal-overlay { padding: 12px !important; }
-  .sp-cron-input { min-width: 0 !important; }
+  .sp-cron-input,
+  .sp-sel,
+  .sp-time { min-width: 0 !important; width: auto !important; }
   .sp-advanced-help { padding-left: 0 !important; }
-  .sp-sel { min-width: 0 !important; }
-  .sp-time { width: auto !important; min-width: 0 !important; }
   .aj-output-pre, .aj-task-pre {
     white-space: pre-wrap !important;
     word-break: break-word !important;
     max-width: 100% !important;
-    overflow-x: auto !important;
+    overflow-x: hidden !important;
   }
   .ajwp-list { max-height: 220px; }
 
-  /* ── Code workspace — toolbar wrapping, popovers ───────────────────── */
+  /* ── Code workspace — toolbar wrapping ────────────────────────────── */
   .ws-toolbar {
     flex-wrap: wrap !important;
     height: auto !important;
@@ -2333,15 +2481,13 @@ input, textarea, select { font-family: inherit; font-size: inherit; color: var(-
     width: calc(100vw - 24px);
     left: 8px !important;
   }
-  .empty-body, .qs-grid {
-    max-width: 100% !important;
-  }
+  .empty-body, .qs-grid { max-width: 100% !important; }
   .fb-dialog {
     width: 100% !important;
     max-width: calc(100vw - 16px) !important;
   }
 
-  /* ── Tweaks panel — narrower on mobile ─────────────────────────────── */
+  /* Tweaks panel */
   .twk-panel {
     width: calc(100vw - 24px) !important;
     max-width: 320px !important;
@@ -2349,28 +2495,7 @@ input, textarea, select { font-family: inherit; font-size: inherit; color: var(-
     bottom: 12px !important;
   }
 
-  /* ── Inline grids inside Overview/System/etc. ──────────────────────── */
-  /* The 'repeat(auto-fit/fill, minmax(N, 1fr))' cases — force single col
-     where N > viewport */
-  .tab-overview [style*="minmax(320px"],
-  .tab-overview [style*="minmax(300px"],
-  [style*="minmax(320px"][style*="grid"],
-  [style*="minmax(300px"][style*="grid"] {
-    grid-template-columns: 1fr !important;
-  }
-
-  /* Two-column grids in cli-usage and other places */
-  .tab-overview [style*="grid-template-columns: 1fr 1fr 1fr"],
-  [style*="gridTemplateColumns: '1fr 1fr 1fr'"] {
-    grid-template-columns: 1fr !important;
-  }
-
-  /* ── Features tab tables (Docker stacks etc.) ──────────────────────── */
-  .card[style*="overflow"] {
-    overflow-x: auto !important;
-  }
-
-  /* ── Forms and inputs full width ───────────────────────────────────── */
+  /* Forms inputs full width, no overflow */
   .field input, .fld input, .fld textarea, .fld select,
   input[type="text"], input[type="search"], input[type="email"],
   input[type="password"], input[type="number"], textarea, select {
@@ -2378,62 +2503,103 @@ input, textarea, select { font-family: inherit; font-size: inherit; color: var(-
     min-width: 0;
   }
 
-  /* ── Toolbar wrapping for filter/search rows ───────────────────────── */
-  .services-toolbar,
-  .samba-toolbar,
-  .files-toolbar,
-  .updates-actions,
-  .filter-chips {
-    flex-wrap: wrap;
-    gap: 6px;
-  }
-  .filter-chips { width: 100%; }
-  .search { min-width: 0 !important; width: 100% !important; max-width: 100% !important; }
-  .search.small { min-width: 0 !important; }
-
-  /* ── Subnav scroll ─────────────────────────────────────────────────── */
-  .subnav {
-    overflow-x: auto;
-    -webkit-overflow-scrolling: touch;
-    scrollbar-width: none;
-    flex-wrap: nowrap;
-    white-space: nowrap;
-  }
-  .subnav::-webkit-scrollbar { display: none; }
-  .subnav-item { padding: 8px 10px; font-size: 12px; flex-shrink: 0; }
-
-  /* ── Top tabs — never clip labels (scroll already enabled) ──────────── */
-  .shell-tabs .tab-pill { flex-shrink: 0; }
-  .shell-tabs { padding: 0 8px; }
-
-  /* ── Toasts shrink to fit ──────────────────────────────────────────── */
+  /* Toasts shrink to fit */
   .toast-stack { right: 8px; left: 8px; max-width: none; top: 8px; }
   .toast { grid-template-columns: 22px 1fr auto; }
   .toast-action { display: none; }
 
-  /* ── Session overlay tabs scrolling ────────────────────────────────── */
+  /* Session overlay */
   .sess-head { flex-wrap: nowrap; }
   .sess-tab { padding: 0 10px; font-size: 11px; max-width: 180px; }
   .sess-tab-sub { display: none; }
   .agent-input { padding: 10px 12px 14px; grid-template-columns: 16px 1fr auto; gap: 6px; }
   .agent-msg-user { padding-left: 0; }
   .agent-msg { max-width: 100%; }
+  .agent-body { padding: 16px 16px; }
 
-  /* ── KPI tiles, pinned tiles, share/agent/SSH grids ────────────────── */
-  .svc-tiles { grid-template-columns: 1fr; }
-  .svc-preview { grid-template-columns: 1fr; }
-  .ssh-grid { grid-template-columns: 1fr; }
-  .agent-grid { grid-template-columns: 1fr; }
-  .share-grid { grid-template-columns: 1fr; }
-
-  /* Status pills/host pills don't break layout */
+  /* Status / host pill text wraps */
   .host-pill-name { white-space: normal; }
 
-  /* Reduce huge fixed paddings on hot cards */
-  .kpi { padding: 12px; }
-  .kpi-val { font-size: 22px; }
-  .updates-stat { min-width: 60px; padding: 6px 10px; }
-  .updates-stat-num { font-size: 18px; }
+  /* Session logs */
+  .logs-line { grid-template-columns: 90px 1fr; }
+  .logs-line > *:nth-child(3) { display: none; }
+
+  /* Command palette */
+  .palette-backdrop { padding-top: 5vh; padding-left: 12px; padding-right: 12px; }
+  .palette { max-width: 100%; }
+  .palette-hint,
+  .palette-kind { display: none; }
+  .palette-item { grid-template-columns: 24px 1fr; }
+
+  /* Terminal overlay */
+  .term-overlay { left: 8px; right: 8px; bottom: 8px; }
+  .shell[data-nav="sidebar"] .term-overlay { left: 8px; }
+  .shell[data-nav="sidebar"][data-collapsed="true"] .term-overlay { left: 8px; }
+  .sess-dock { right: 8px; bottom: 8px; }
+
+  /* Modals */
+  .modal-backdrop { padding: 12px; }
+  .modal-sm, .modal-md, .modal-lg, .modal-xl { max-width: 100%; }
+  .modal-head { padding: 16px 16px 10px; }
+  .modal-body { padding: 14px 16px; }
+  .modal-foot { padding: 12px 16px; }
+
+  /* ── Files tab specific — sidebar floating, toolbar compact ─────────── */
+  .files-workspace { gap: 6px !important; position: relative; }
+  .files-sidebar {
+    position: absolute;
+    top: 0;
+    left: 0;
+    z-index: 50;
+    background: var(--bg);
+    border: 1px solid var(--line);
+    border-radius: 8px;
+    padding: 12px !important;
+    box-shadow: 0 6px 20px rgba(0,0,0,0.4);
+    max-height: 60vh;
+    width: 80vw !important;
+    max-width: 280px;
+  }
+  .files-toolbar { padding: 6px 8px !important; gap: 6px !important; }
+  .files-toolbar .files-open-code { display: none !important; }
+  .files-toolbar .files-view-toggle { display: none !important; }
+  .files-toolbar .btn-ghost.sm { padding: 5px 8px !important; font-size: 11px !important; }
+  .files-toolbar .files-crumbs {
+    order: 99;
+    flex-basis: 100% !important;
+    width: 100%;
+    border-top: 1px solid var(--line);
+    padding-top: 6px;
+    margin-top: 2px;
+  }
+  .files-action-bar {
+    overflow-x: auto !important;
+    height: auto !important;
+    min-height: 38px;
+    -webkit-overflow-scrolling: touch;
+    scrollbar-width: none;
+  }
+  .files-action-bar::-webkit-scrollbar { display: none; }
+  .files-action-bar .files-action-extra { display: none !important; }
+  .files-action-bar .btn-ghost.sm { padding: 4px 8px !important; font-size: 11px !important; flex-shrink: 0; }
+
+  /* Speedtest / Traffic cards — single column on mobile */
+  [style*="minmax(320px"],
+  [style*="minmax(300px"],
+  [style*="minmax(260px"] {
+    grid-template-columns: 1fr !important;
+  }
+  .tab-overview [style*="grid-template-columns: 1fr 1fr 1fr"],
+  [style*="gridTemplateColumns: '1fr 1fr 1fr'"] {
+    grid-template-columns: 1fr !important;
+  }
+
+  /* Features tab cards wrapping tables — drop the inline overflow:auto by
+     forcing the card to not scroll horizontally. Inner tables become cards
+     via the .proc-table / .samba-table rules above. */
+  .card[style*="overflow"] {
+    overflow-x: hidden !important;
+  }
 }
 
 /* ── Extra-narrow phones (≤380px) ──────────────────────────────────────── */
@@ -2450,104 +2616,4 @@ input, textarea, select { font-family: inherit; font-size: inherit; color: var(-
   .updates-stat { min-width: 50px; padding: 4px 8px; }
   .kpi-val { font-size: 18px; }
   .ws-tb-label { display: none !important; }
-}
-
-/* ──────────────────────────────────────────────────────────────────────────
-   MOBILE v3 — Files tab, log overflow, card arrangement
-   ────────────────────────────────────────────────────────────────────────── */
-@media (max-width: 768px) {
-  /* Files tab — sidebar hidden by default (state inits to false on mobile,
-     this is a defense in depth in case user toggled it then resized) */
-  .files-workspace { gap: 6px !important; position: relative; }
-  .files-sidebar {
-    position: absolute;
-    top: 0;
-    left: 0;
-    z-index: 50;
-    background: var(--bg);
-    border: 1px solid var(--line);
-    border-radius: 8px;
-    padding: 12px !important;
-    box-shadow: 0 6px 20px rgba(0,0,0,0.4);
-    max-height: 60vh;
-    width: 80vw !important;
-    max-width: 280px;
-  }
-
-  /* Files toolbar — compact: hide Open in Code & view toggle, shrink buttons */
-  .files-toolbar { padding: 6px 8px !important; gap: 6px !important; }
-  .files-toolbar .files-open-code { display: none !important; }
-  .files-toolbar .files-view-toggle { display: none !important; }
-  .files-toolbar .btn-ghost.sm { padding: 5px 8px !important; font-size: 11px !important; }
-  .files-toolbar .files-crumbs {
-    order: 99;
-    flex-basis: 100% !important;
-    width: 100%;
-    border-top: 1px solid var(--line);
-    padding-top: 6px;
-    margin-top: 2px;
-  }
-
-  /* Files list — hide Owner/Mode columns on mobile to fit name */
-  .files-list-head .col-owner,
-  .files-list-head .col-mode,
-  .file-row .col-owner,
-  .file-row .col-mode { display: none !important; }
-  .files-list-head .col-mtime,
-  .file-row .col-mtime { width: 80px !important; font-size: 10px !important; }
-  .files-list-head .col-size,
-  .file-row .col-size { width: 60px !important; }
-  /* Reset the deep-pass min-width which is too wide for our reduced columns */
-  .files-list, .files-list-card { overflow-x: auto; }
-  .file-row { min-width: 0 !important; }
-
-  /* Files action bar — horizontal scroll, hide secondary actions */
-  .files-action-bar {
-    overflow-x: auto !important;
-    height: auto !important;
-    min-height: 38px;
-    -webkit-overflow-scrolling: touch;
-    scrollbar-width: none;
-  }
-  .files-action-bar::-webkit-scrollbar { display: none; }
-  .files-action-bar .files-action-extra { display: none !important; }
-  .files-action-bar .btn-ghost.sm { padding: 4px 8px !important; font-size: 11px !important; flex-shrink: 0; }
-
-  /* Log boxes — reduce font, wrap long lines, cap height */
-  .logbox {
-    font-size: 10px !important;
-    max-height: 250px !important;
-    white-space: pre-wrap !important;
-    word-break: break-all !important;
-    padding: 8px !important;
-  }
-
-  /* All inline-styled <pre> blocks for logs */
-  pre[style*="maxHeight"], pre[style*="max-height"] {
-    white-space: pre-wrap !important;
-    word-break: break-all !important;
-    font-size: 10px !important;
-    max-width: 100% !important;
-  }
-
-  /* Speedtest / Traffic cards using minmax(320px) — ensure single column */
-  [style*="minmax(320px"] {
-    grid-template-columns: 1fr !important;
-  }
-
-  /* Temperature grid using minmax(260px) — also single column on mobile */
-  [style*="minmax(260px"] {
-    grid-template-columns: 1fr !important;
-  }
-
-  /* Features tab cards wrapping tables — already have overflow:auto inline,
-     but ensure horizontal scroll is reachable */
-  .proc-table { font-size: 10.5px !important; }
-}
-
-/* Extra-narrow phones (≤380px) — Files tab even more compact */
-@media (max-width: 380px) {
-  .files-list-head .col-mtime,
-  .file-row .col-mtime { display: none !important; }
-  .files-toolbar .btn-ghost.sm { padding: 4px 6px !important; font-size: 10.5px !important; }
 }
