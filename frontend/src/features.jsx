@@ -1160,28 +1160,30 @@ function StacksTab() {
                           detail.services.length === 0
                             ? <div className="muted">No services running. Press Up to start.</div>
                             : (
-                              <table style={{ width: '100%', fontSize: '11px' }}>
-                                <thead>
-                                  <tr style={{ textAlign: 'left', color: 'var(--text-3)' }}>
-                                    <th>Service</th>
-                                    <th>Container</th>
-                                    <th>Image</th>
-                                    <th>State</th>
-                                    <th>Ports</th>
-                                  </tr>
-                                </thead>
-                                <tbody>
-                                  {detail.services.map((sv) => (
-                                    <tr key={sv.container || sv.name}>
-                                      <td>{sv.name}</td>
-                                      <td className="muted">{sv.container}</td>
-                                      <td className="muted" style={{ maxWidth: 200, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={sv.image}>{sv.image}</td>
-                                      <td>{statusBadge(sv.state)}</td>
-                                      <td className="muted">{sv.ports || '—'}</td>
+                              <div style={{ overflowX: 'auto', WebkitOverflowScrolling: 'touch' }}>
+                                <table className="stack-detail-table" style={{ width: '100%', fontSize: '11px', minWidth: 0 }}>
+                                  <thead>
+                                    <tr style={{ textAlign: 'left', color: 'var(--text-3)' }}>
+                                      <th>Service</th>
+                                      <th>Container</th>
+                                      <th>Image</th>
+                                      <th>State</th>
+                                      <th>Ports</th>
                                     </tr>
-                                  ))}
-                                </tbody>
-                              </table>
+                                  </thead>
+                                  <tbody>
+                                    {detail.services.map((sv) => (
+                                      <tr key={sv.container || sv.name}>
+                                        <td>{sv.name}</td>
+                                        <td className="muted">{sv.container}</td>
+                                        <td className="muted" style={{ maxWidth: 200, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={sv.image}>{sv.image}</td>
+                                        <td>{statusBadge(sv.state)}</td>
+                                        <td className="muted">{sv.ports || '—'}</td>
+                                      </tr>
+                                    ))}
+                                  </tbody>
+                                </table>
+                              </div>
                             )
                         )}
                       </div>
