@@ -1129,7 +1129,7 @@ function StacksTab() {
               <th>Project</th>
               <th style={{ width: '120px' }}>Status</th>
               <th>Location</th>
-              <th style={{ width: '320px', textAlign: 'right' }}>Actions</th>
+              <th style={{ minWidth: '180px', textAlign: 'right' }}>Actions</th>
             </tr>
           </thead>
           <tbody>

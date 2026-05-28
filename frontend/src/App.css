@@ -2225,3 +2225,229 @@ input, textarea, select { font-family: inherit; font-size: inherit; color: var(-
   }
   .form-cols { grid-template-columns: 1fr; }
 }
+
+/* ──────────────────────────────────────────────────────────────────────────
+   DEEP MOBILE PASS — second audit, tab-by-tab overflow fixes
+   These rules override component-level <style> tags via specificity/!important
+   ────────────────────────────────────────────────────────────────────────── */
+@media (max-width: 768px) {
+
+  /* ── Universal containment ─────────────────────────────────────────── */
+  .shell-main {
+    padding: 10px;
+    overflow-x: hidden;
+    max-width: 100vw;
+  }
+  .shell-main > * { max-width: 100%; min-width: 0; }
+  .card { padding: 12px; min-width: 0; max-width: 100%; }
+  .card > * { min-width: 0; max-width: 100%; }
+
+  /* Break long text everywhere */
+  .card, .card *, .tab-pill, .nav-item, .chip, .tag,
+  .svc-tile-name, .svc-tile-meta, .svc-pcard-name, .svc-pcard-meta,
+  .agent-name, .agent-meta, .agent-path,
+  .ssh-name, .ssh-dest,
+  .pinned-name, .pinned-sub,
+  .host-details-grid b, .host-dl dd,
+  .kpi-val, .kpi-sub, .kpi-lbl {
+    overflow-wrap: break-word;
+    word-break: break-word;
+    min-width: 0;
+  }
+
+  /* ── All tables: horizontal scroll wrapper ─────────────────────────── */
+  .proc-table,
+  .samba-table,
+  table {
+    display: block;
+    overflow-x: auto;
+    -webkit-overflow-scrolling: touch;
+    max-width: 100%;
+    white-space: nowrap;
+  }
+  .proc-table thead, .proc-table tbody,
+  .samba-table thead, .samba-table tbody {
+    display: table;
+    width: max-content;
+    min-width: 100%;
+  }
+  .proc-table th, .proc-table td,
+  .samba-table th, .samba-table td {
+    white-space: nowrap;
+  }
+
+  /* ── pre / code blocks ─────────────────────────────────────────────── */
+  pre, code {
+    max-width: 100%;
+    overflow-x: auto;
+    word-break: break-word;
+    white-space: pre-wrap;
+  }
+  .logbox { font-size: 10.5px; padding: 10px; }
+
+  /* ── Agent Jobs (aj-) — pane needs to stack on mobile ──────────────── */
+  .aj-root { flex-direction: column !important; height: auto !important; min-height: 100vh; }
+  .aj-list-pane {
+    width: 100% !important;
+    min-width: 0 !important;
+    max-width: 100% !important;
+    border-right: 0 !important;
+    border-bottom: 1px solid rgba(255,255,255,0.06);
+  }
+  .aj-detail-pane,
+  .aj-empty-state { width: 100% !important; min-width: 0 !important; }
+  .aj-modal-dialog {
+    width: 100% !important;
+    max-width: calc(100vw - 24px) !important;
+  }
+  .aj-modal-overlay { padding: 12px !important; }
+  .sp-cron-input { min-width: 0 !important; }
+  .sp-advanced-help { padding-left: 0 !important; }
+  .sp-sel { min-width: 0 !important; }
+  .sp-time { width: auto !important; min-width: 0 !important; }
+  .aj-output-pre, .aj-task-pre {
+    white-space: pre-wrap !important;
+    word-break: break-word !important;
+    max-width: 100% !important;
+    overflow-x: auto !important;
+  }
+  .ajwp-list { max-height: 220px; }
+
+  /* ── Code workspace — toolbar wrapping, popovers ───────────────────── */
+  .ws-toolbar {
+    flex-wrap: wrap !important;
+    height: auto !important;
+    min-height: 56px !important;
+    padding: 8px !important;
+    gap: 4px !important;
+  }
+  .ws-tb-btn {
+    max-width: 100% !important;
+    min-width: 0 !important;
+    flex-shrink: 1;
+  }
+  .ws-tb-label { max-width: 100px !important; }
+  .ws-popover {
+    min-width: 0 !important;
+    max-width: calc(100vw - 24px) !important;
+    width: calc(100vw - 24px);
+    left: 8px !important;
+  }
+  .empty-body, .qs-grid {
+    max-width: 100% !important;
+  }
+  .fb-dialog {
+    width: 100% !important;
+    max-width: calc(100vw - 16px) !important;
+  }
+
+  /* ── Tweaks panel — narrower on mobile ─────────────────────────────── */
+  .twk-panel {
+    width: calc(100vw - 24px) !important;
+    max-width: 320px !important;
+    right: 12px !important;
+    bottom: 12px !important;
+  }
+
+  /* ── Inline grids inside Overview/System/etc. ──────────────────────── */
+  /* The 'repeat(auto-fit/fill, minmax(N, 1fr))' cases — force single col
+     where N > viewport */
+  .tab-overview [style*="minmax(320px"],
+  .tab-overview [style*="minmax(300px"],
+  [style*="minmax(320px"][style*="grid"],
+  [style*="minmax(300px"][style*="grid"] {
+    grid-template-columns: 1fr !important;
+  }
+
+  /* Two-column grids in cli-usage and other places */
+  .tab-overview [style*="grid-template-columns: 1fr 1fr 1fr"],
+  [style*="gridTemplateColumns: '1fr 1fr 1fr'"] {
+    grid-template-columns: 1fr !important;
+  }
+
+  /* ── Features tab tables (Docker stacks etc.) ──────────────────────── */
+  .card[style*="overflow"] {
+    overflow-x: auto !important;
+  }
+
+  /* ── Forms and inputs full width ───────────────────────────────────── */
+  .field input, .fld input, .fld textarea, .fld select,
+  input[type="text"], input[type="search"], input[type="email"],
+  input[type="password"], input[type="number"], textarea, select {
+    max-width: 100%;
+    min-width: 0;
+  }
+
+  /* ── Toolbar wrapping for filter/search rows ───────────────────────── */
+  .services-toolbar,
+  .samba-toolbar,
+  .files-toolbar,
+  .updates-actions,
+  .filter-chips {
+    flex-wrap: wrap;
+    gap: 6px;
+  }
+  .filter-chips { width: 100%; }
+  .search { min-width: 0 !important; width: 100% !important; max-width: 100% !important; }
+  .search.small { min-width: 0 !important; }
+
+  /* ── Subnav scroll ─────────────────────────────────────────────────── */
+  .subnav {
+    overflow-x: auto;
+    -webkit-overflow-scrolling: touch;
+    scrollbar-width: none;
+    flex-wrap: nowrap;
+    white-space: nowrap;
+  }
+  .subnav::-webkit-scrollbar { display: none; }
+  .subnav-item { padding: 8px 10px; font-size: 12px; flex-shrink: 0; }
+
+  /* ── Top tabs — never clip labels (scroll already enabled) ──────────── */
+  .shell-tabs .tab-pill { flex-shrink: 0; }
+  .shell-tabs { padding: 0 8px; }
+
+  /* ── Toasts shrink to fit ──────────────────────────────────────────── */
+  .toast-stack { right: 8px; left: 8px; max-width: none; top: 8px; }
+  .toast { grid-template-columns: 22px 1fr auto; }
+  .toast-action { display: none; }
+
+  /* ── Session overlay tabs scrolling ────────────────────────────────── */
+  .sess-head { flex-wrap: nowrap; }
+  .sess-tab { padding: 0 10px; font-size: 11px; max-width: 180px; }
+  .sess-tab-sub { display: none; }
+  .agent-input { padding: 10px 12px 14px; grid-template-columns: 16px 1fr auto; gap: 6px; }
+  .agent-msg-user { padding-left: 0; }
+  .agent-msg { max-width: 100%; }
+
+  /* ── KPI tiles, pinned tiles, share/agent/SSH grids ────────────────── */
+  .svc-tiles { grid-template-columns: 1fr; }
+  .svc-preview { grid-template-columns: 1fr; }
+  .ssh-grid { grid-template-columns: 1fr; }
+  .agent-grid { grid-template-columns: 1fr; }
+  .share-grid { grid-template-columns: 1fr; }
+
+  /* Status pills/host pills don't break layout */
+  .host-pill-name { white-space: normal; }
+
+  /* Reduce huge fixed paddings on hot cards */
+  .kpi { padding: 12px; }
+  .kpi-val { font-size: 22px; }
+  .updates-stat { min-width: 60px; padding: 6px 10px; }
+  .updates-stat-num { font-size: 18px; }
+}
+
+/* ── Extra-narrow phones (≤380px) ──────────────────────────────────────── */
+@media (max-width: 380px) {
+  .shell-main { padding: 8px; }
+  .bento-row.kpis { grid-template-columns: 1fr; }
+  .pinned-grid { grid-template-columns: 1fr; }
+  .res-grid {
+    grid-template-columns: 1fr;
+    grid-template-areas:
+      "cpu" "ram" "net" "gpu" "disk" "proc";
+  }
+  .core-grid { grid-template-columns: repeat(6, 1fr); }
+  .updates-stat { min-width: 50px; padding: 4px 8px; }
+  .kpi-val { font-size: 18px; }
+  .ws-tb-label { display: none !important; }
+}
