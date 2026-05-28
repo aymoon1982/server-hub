@@ -109,9 +109,10 @@ input, textarea, select { font-family: inherit; font-size: inherit; color: var(-
 /* sidebar layout */
 .shell[data-nav="sidebar"] {
   grid-template-columns: 232px 1fr;
-  grid-template-rows: 48px 1fr;
+  grid-template-rows: 48px 0 1fr;
   grid-template-areas:
     "side topbar"
+    "side tabs"
     "side main";
 }
 .shell[data-nav="sidebar"][data-collapsed="true"] { grid-template-columns: 64px 1fr; }
@@ -2039,4 +2040,188 @@ input, textarea, select { font-family: inherit; font-size: inherit; color: var(-
   .custom-bento-grid > div {
     grid-column: span 6 !important;
   }
+}
+
+/* ─── Mobile / Responsive ──────────────────────────────────────────────────
+   Breakpoints: ≤768px = mobile, 769–1024px = tablet
+   ────────────────────────────────────────────────────────────────────────── */
+
+/* Shell-tabs: always in DOM, hidden by default in sidebar mode on desktop */
+.shell-tabs--sidebar-hidden { display: none; }
+
+/* ── Mobile (≤768px) ─────────────────────────────────────────────────────── */
+@media (max-width: 768px) {
+
+  /* Switch sidebar to topbar-like layout */
+  .shell[data-nav="sidebar"] {
+    grid-template-columns: 1fr;
+    grid-template-rows: 48px 44px 1fr;
+    grid-template-areas:
+      "topbar"
+      "tabs"
+      "main";
+  }
+  .shell-sidebar { display: none !important; }
+
+  /* Show the tab bar in sidebar mode on mobile */
+  .shell-tabs--sidebar-hidden { display: flex; }
+
+  /* Scrollable tab bar — no scrollbar visible */
+  .shell-tabs {
+    overflow-x: auto;
+    -webkit-overflow-scrolling: touch;
+    scrollbar-width: none;
+    flex-wrap: nowrap;
+  }
+  .shell-tabs::-webkit-scrollbar { display: none; }
+  .shell-tabs .tab-pill { padding: 8px 10px; font-size: 12px; }
+  .shell-tabs .tab-pill .nav-glyph { display: none; }
+  .shell-tabs-sep { display: none; }
+
+  /* Compact top bar */
+  .shell-top { padding: 0 8px; gap: 6px; }
+  .top-search { max-width: none; }
+  .top-search .kbd { display: none; }
+  .top-search input::placeholder { font-size: 12px; }
+
+  /* Hide verbose top-bar items on narrow screens */
+  .term-launch { display: none; }
+  .theme-toggle { display: none; }
+
+  /* Larger touch targets for icon buttons */
+  .icon-btn { width: 36px; height: 36px; }
+  .icon-btn-top { width: 36px; height: 36px; }
+  .nav-item { min-height: 44px; }
+  .tab-pill { min-height: 44px; }
+
+  /* Page head: stack label + subtitle */
+  .page-head { flex-direction: column; gap: 2px; align-items: flex-start; }
+  .page-head .page-sub { display: none; }
+
+  /* ── Overview / Bento ───── */
+  .bento-row.kpis { grid-template-columns: repeat(2, 1fr); }
+  .bento-row.main {
+    grid-template-columns: 1fr;
+    grid-template-areas:
+      "pin"
+      "disk"
+      "counts"
+      "events"
+      "host";
+  }
+  .pinned-grid { grid-template-columns: 1fr 1fr; }
+
+  /* ── Services / tables with many columns ─────
+     Wrap in a scroll container so content doesn't clip */
+  .svc-list { overflow-x: auto; -webkit-overflow-scrolling: touch; }
+  .svc-list-head,
+  .svc-row { min-width: 620px; }
+
+  /* Services toolbar */
+  .services-toolbar { flex-wrap: wrap; }
+  .toolbar-actions { margin-left: 0; width: 100%; justify-content: flex-start; }
+
+  /* ── Resource grid ───── */
+  .res-grid {
+    grid-template-columns: 1fr 1fr;
+    grid-template-areas:
+      "cpu  ram"
+      "net  gpu"
+      "disk disk"
+      "proc proc";
+  }
+
+  /* Core grid: fewer columns on mobile */
+  .core-grid { grid-template-columns: repeat(8, 1fr); }
+
+  /* ── Files pane ───── */
+  .files-pane { grid-template-columns: 1fr; }
+  .files-tree { display: none; }
+  .files-list { overflow-x: auto; -webkit-overflow-scrolling: touch; }
+  .files-list-head,
+  .file-row { min-width: 500px; }
+
+  /* ── System / Updates ───── */
+  .updates-head {
+    grid-template-columns: 1fr;
+    gap: 10px;
+  }
+  .updates-stats { flex-wrap: wrap; gap: 4px; }
+  .updates-actions { justify-content: flex-start; }
+  .updates-list { overflow-x: auto; -webkit-overflow-scrolling: touch; }
+  .updates-list-head,
+  .update-row { min-width: 580px; }
+
+  /* ── Samba ───── */
+  .samba-head { flex-direction: column; align-items: flex-start; gap: 8px; }
+  .samba-table { display: block; overflow-x: auto; -webkit-overflow-scrolling: touch; }
+
+  /* ── SSH ───── */
+  .ssh-head { flex-direction: column; align-items: flex-start; gap: 4px; }
+
+  /* ── Agents ───── */
+  .agents-intro { flex-direction: column; align-items: flex-start; gap: 4px; }
+
+  /* ── Forms ───── */
+  .form-cols { grid-template-columns: 1fr; }
+  .form-grid { grid-template-columns: 1fr; }
+  .search { min-width: unset; width: 100%; max-width: none; }
+
+  /* ── Agent chat body ───── */
+  .agent-body { padding: 16px 16px; }
+
+  /* ── Session overlay logs ───── */
+  .logs-line { grid-template-columns: 90px 1fr; }
+  .logs-line > *:nth-child(3) { display: none; } /* hide level col */
+
+  /* ── Browse modal list ───── */
+  .browse-list { overflow-x: auto; -webkit-overflow-scrolling: touch; }
+  .browse-head,
+  .browse-row { min-width: 500px; }
+
+  /* ── Command palette ───── */
+  .palette-backdrop { padding-top: 5vh; padding-left: 12px; padding-right: 12px; }
+  .palette { max-width: 100%; }
+  .palette-hint,
+  .palette-kind { display: none; }
+  .palette-item { grid-template-columns: 24px 1fr; }
+
+  /* ── Terminal overlay ───── */
+  .term-overlay { left: 8px; right: 8px; bottom: 8px; }
+  .shell[data-nav="sidebar"] .term-overlay { left: 8px; }
+  .shell[data-nav="sidebar"][data-collapsed="true"] .term-overlay { left: 8px; }
+
+  /* ── Session dock ───── */
+  .sess-dock { right: 8px; bottom: 8px; }
+
+  /* ── Modals ───── */
+  .modal-backdrop { padding: 12px; }
+  .modal-sm,
+  .modal-md,
+  .modal-lg,
+  .modal-xl { max-width: 100%; }
+  .modal-head { padding: 16px 16px 10px; }
+  .modal-body { padding: 14px 16px; }
+  .modal-foot { padding: 12px 16px; }
+}
+
+/* ── Tablet (769px–1024px) ────────────────────────────────────────────────── */
+@media (max-width: 1024px) and (min-width: 769px) {
+  .bento-row.kpis { grid-template-columns: repeat(2, 1fr); }
+  .bento-row.main {
+    grid-template-columns: 1fr 1fr;
+    grid-template-areas:
+      "pin  disk"
+      "counts events"
+      "host  host";
+  }
+  .res-grid {
+    grid-template-columns: 1fr 1fr;
+    grid-template-areas:
+      "cpu  ram"
+      "net  gpu"
+      "disk disk"
+      "proc proc";
+  }
+  .form-cols { grid-template-columns: 1fr; }
 }

@@ -312,26 +312,24 @@ function Shell() {
         </div>
       </header>
 
-      {t.nav === 'topbar' && (
-        <nav className="shell-tabs">
-          {SECTIONS.map((sec, si) => (
-            <React.Fragment key={sec.id}>
-              {si > 0 && <span className="shell-tabs-sep" />}
-              {TABS.filter(x => x.section === sec.id).map(tab => (
-                <button
-                  key={tab.id}
-                  className={`tab-pill ${activeTab === tab.id ? 'is-active' : ''}`}
-                  onClick={() => setActiveTab(tab.id)}
-                >
-                  <span className="nav-glyph">{tab.glyph}</span>
-                  <span>{tab.label}</span>
-                  {counts[tab.id] !== '' && <span className={`nav-count ${tab.badge ? 'is-badge' : ''}`}>{counts[tab.id]}</span>}
-                </button>
-              ))}
-            </React.Fragment>
-          ))}
-        </nav>
-      )}
+      <nav className={`shell-tabs${t.nav === 'sidebar' ? ' shell-tabs--sidebar-hidden' : ''}`}>
+        {SECTIONS.map((sec, si) => (
+          <React.Fragment key={sec.id}>
+            {si > 0 && <span className="shell-tabs-sep" />}
+            {TABS.filter(x => x.section === sec.id).map(tab => (
+              <button
+                key={tab.id}
+                className={`tab-pill ${activeTab === tab.id ? 'is-active' : ''}`}
+                onClick={() => setActiveTab(tab.id)}
+              >
+                <span className="nav-glyph">{tab.glyph}</span>
+                <span>{tab.label}</span>
+                {counts[tab.id] !== '' && <span className={`nav-count ${tab.badge ? 'is-badge' : ''}`}>{counts[tab.id]}</span>}
+              </button>
+            ))}
+          </React.Fragment>
+        ))}
+      </nav>
 
       <main className={`shell-main${['code','jobs'].includes(activeTab) ? ' shell-main--fullscreen' : ''}`}>
         {!['code','jobs'].includes(activeTab) && (
