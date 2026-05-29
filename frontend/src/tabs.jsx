@@ -3,6 +3,8 @@ import axios from 'axios';
 import { ShareEditor, ShareBrowser, SSHKeysPanel, FormField, SystemUpdatesTab } from './features.jsx';
 import { Modal } from './ui-bridge.jsx';
 import Editor from '@monaco-editor/react';
+import { MetricsTab } from './metrics.jsx';
+import { PackagesTab } from './packages.jsx';
 
 export const makeDynamicUrl = (originalUrl) => {
   if (!originalUrl) return originalUrl;
@@ -102,6 +104,10 @@ function KBD({ children }) { return <kbd className="kbd">{children}</kbd>; }
 
 // ---------- OVERVIEW (merged with Resources) ----------
 const DEFAULT_LAYOUT = [
+  { id: 'clock', label: 'Clock & Uptime', visible: true, width: 'third' },
+  { id: 'weather', label: 'Local Weather', visible: true, width: 'third' },
+  { id: 'quick_search', label: 'Quick Search', visible: true, width: 'third' },
+  { id: 'system_gauges', label: 'System Gauges (Compact)', visible: true, width: 'full' },
   { id: 'host_info', label: 'Host Info', visible: true, width: 'half' },
   { id: 'events', label: 'System Events', visible: true, width: 'half' },
   { id: 'cpu', label: 'CPU Telemetry', visible: true, width: 'full' },
@@ -111,6 +117,7 @@ const DEFAULT_LAYOUT = [
   { id: 'smart', label: 'SMART Diagnostics', visible: true, width: 'full' },
   { id: 'gpu', label: 'GPU Telemetry', visible: true, width: 'third' },
   { id: 'proc', label: 'Top Processes', visible: true, width: 'full' },
+  { id: 'memo', label: 'Quick Notes', visible: true, width: 'third' },
 ];
 
 function Overview({ onNav }) {
@@ -120,6 +127,7 @@ function Overview({ onNav }) {
   const [events, setEvents] = useState([]);
   const [smart, setSmart] = useState([]);
   const [customizing, setCustomizing] = useState(false);
+  const [showLayoutModal, setShowLayoutModal] = useState(false);
 
   const [layout, setLayout] = useState(() => {
     const cached = localStorage.getItem('dashboard_overview_layout');
@@ -128,7 +136,7 @@ function Overview({ onNav }) {
         const parsed = JSON.parse(cached);
         const updated = DEFAULT_LAYOUT.map(d => {
           const match = parsed.find(p => p.id === d.id);
-          return match ? { ...d, visible: match.visible } : d;
+          return match ? { ...d, visible: match.visible, width: match.width || d.width } : d;
         });
         const orderMap = parsed.map(p => p.id);
         updated.sort((a, b) => orderMap.indexOf(a.id) - orderMap.indexOf(b.id));
@@ -161,6 +169,140 @@ function Overview({ onNav }) {
 
   const resetLayout = () => {
     saveLayout(DEFAULT_LAYOUT.map(w => ({ ...w })));
+  };
+
+  // ── Clock state
+  const [timeStr, setTimeStr] = useState('');
+  const [dateStr, setDateStr] = useState('');
+  useEffect(() => {
+    const updateTime = () => {
+      const d = new Date();
+      setTimeStr(d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' }));
+      setDateStr(d.toLocaleDateString([], { weekday: 'short', month: 'short', day: 'numeric', year: 'numeric' }));
+    };
+    updateTime();
+    const interval = setInterval(updateTime, 1000);
+    return () => clearInterval(interval);
+  }, []);
+
+  // ── Weather state
+  const [weatherCity, setWeatherCity] = useState(() => localStorage.getItem('dashboard_weather_city') || 'London');
+  const [weatherData, setWeatherData] = useState(null);
+  const [editingWeatherCity, setEditingWeatherCity] = useState(false);
+  const [weatherInput, setWeatherInput] = useState(weatherCity);
+  useEffect(() => {
+    let active = true;
+    const fetchWeather = async () => {
+      try {
+        const res = await axios.get(`https://wttr.in/${encodeURIComponent(weatherCity)}?format=j1`);
+        if (!active) return;
+        const current = res.data?.current_condition?.[0];
+        const area = res.data?.nearest_area?.[0];
+        if (current) {
+          setWeatherData({
+            temp: current.temp_C,
+            desc: current.weatherDesc?.[0]?.value || 'Unknown',
+            humidity: current.humidity,
+            wind: current.windspeedKmph,
+            city: area?.areaName?.[0]?.value || weatherCity
+          });
+        }
+      } catch (e) {
+        if (!active) return;
+        setWeatherData({
+          temp: '22',
+          desc: 'Partly Cloudy',
+          humidity: '52',
+          wind: '10',
+          city: weatherCity,
+          mock: true
+        });
+      }
+    };
+    fetchWeather();
+    return () => { active = false; };
+  }, [weatherCity]);
+
+  // ── Search state
+  const [searchQuery, setSearchQuery] = useState('');
+  const [searchEngine, setSearchEngine] = useState('dashboard');
+  const handleSearchSubmit = (e) => {
+    e.preventDefault();
+    if (!searchQuery.trim()) return;
+    if (searchEngine === 'dashboard') {
+      const q = searchQuery.toLowerCase().trim();
+      const match = [
+        { id: 'overview', keywords: ['overview', 'stats', 'home', 'main', 'resource', 'clock', 'weather'] },
+        { id: 'system', keywords: ['system', 'process', 'journal', 'log', 'network', 'port', 'service', 'update'] },
+        { id: 'web', keywords: ['web', 'website', 'ui', 'port', 'manual', 'link', 'discover'] },
+        { id: 'backend', keywords: ['backend', 'internal', 'port', 'tcp', 'udp', 'socket'] },
+        { id: 'docker', keywords: ['docker', 'container', 'compose', 'stack', 'image', 'volume'] },
+        { id: 'code', keywords: ['code', 'workspace', 'vscode', 'editor', 'ide', 'file'] },
+        { id: 'jobs', keywords: ['job', 'agent', 'run', 'background', 'task'] },
+        { id: 'agents', keywords: ['agent', 'model', 'ollama', 'gemini', 'claude', 'aider'] },
+        { id: 'samba', keywords: ['samba', 'share', 'nas', 'smb', 'user'] },
+        { id: 'files', keywords: ['file', 'directory', 'explorer', 'folder', 'backup', 'sync'] },
+        { id: 'ssh', keywords: ['ssh', 'terminal', 'remote', 'connect', 'server'] },
+        { id: 'usage', keywords: ['usage', 'cli', 'command', 'terminal'] }
+      ].find(t => t.id === q || t.keywords.some(k => k.includes(q)));
+
+      if (match) {
+        onNav(match.id);
+      } else {
+        onNav('web');
+      }
+    } else if (searchEngine === 'google') {
+      window.open(`https://www.google.com/search?q=${encodeURIComponent(searchQuery)}`, '_blank');
+    } else if (searchEngine === 'ddg') {
+      window.open(`https://duckduckgo.com/?q=${encodeURIComponent(searchQuery)}`, '_blank');
+    }
+  };
+
+  // ── Quick Notes Memo state
+  const [notes, setNotes] = useState(() => localStorage.getItem('dashboard_memo_notes') || 'Write down your quick ideas or to-do list here...');
+  const saveNotes = (val) => {
+    setNotes(val);
+    localStorage.setItem('dashboard_memo_notes', val);
+  };
+
+  // ── HTML5 Drag & Drop states
+  const [draggedIndex, setDraggedIndex] = useState(null);
+  const [dragOverIndex, setDragOverIndex] = useState(null);
+  const handleDragStart = (index) => {
+    setDraggedIndex(index);
+  };
+  const handleDragOver = (e, index) => {
+    e.preventDefault();
+    if (dragOverIndex !== index) setDragOverIndex(index);
+  };
+  const handleDrop = (index) => {
+    if (draggedIndex === null || draggedIndex === index) return;
+    const newLayout = [...layout];
+    const item = newLayout[draggedIndex];
+    newLayout.splice(draggedIndex, 1);
+    newLayout.splice(index, 0, item);
+    saveLayout(newLayout);
+    setDraggedIndex(null);
+    setDragOverIndex(null);
+  };
+  const handleDragEnd = () => {
+    setDraggedIndex(null);
+    setDragOverIndex(null);
+  };
+
+  // ── Grid card options manipulation
+  const changeWidth = (index, currentWidth) => {
+    const widths = ['third', 'half', 'full'];
+    const nextIdx = (widths.indexOf(currentWidth) + 1) % widths.length;
+    const nextWidth = widths[nextIdx];
+    const newLayout = [...layout];
+    newLayout[index] = { ...newLayout[index], width: nextWidth };
+    saveLayout(newLayout);
+  };
+  const hideWidgetDirectly = (index) => {
+    const newLayout = [...layout];
+    newLayout[index] = { ...newLayout[index], visible: false };
+    saveLayout(newLayout);
   };
 
   const [cpuHistory, setCpuHistory] = useState(() => Array.from({length: 24}, () => 10 + Math.floor(Math.random() * 20)));
@@ -249,6 +391,156 @@ function Overview({ onNav }) {
 
   const renderWidget = (id) => {
     switch (id) {
+      case 'clock':
+        return (
+          <div className="card bento-card" style={{ height: '100%', boxSizing: 'border-box' }}>
+            <div className="clock-widget">
+              <div className="clock-time mono">{timeStr || '00:00:00'}</div>
+              <div className="clock-date mono">{dateStr || 'Loading Date...'}</div>
+              {stats.host?.uptime && (
+                <div className="clock-uptime mono">
+                  Uptime: {stats.host.uptime}
+                </div>
+              )}
+            </div>
+          </div>
+        );
+      case 'weather':
+        return (
+          <div className="card bento-card" style={{ height: '100%', boxSizing: 'border-box' }}>
+            <div className="card-head">
+              <h3>Weather</h3>
+              {editingWeatherCity ? (
+                <form onSubmit={(e) => {
+                  e.preventDefault();
+                  if (weatherInput.trim()) {
+                    setWeatherCity(weatherInput.trim());
+                    localStorage.setItem('dashboard_weather_city', weatherInput.trim());
+                  }
+                  setEditingWeatherCity(false);
+                }} style={{ display: 'flex', gap: 4 }}>
+                  <input
+                    value={weatherInput}
+                    onChange={(e) => setWeatherInput(e.target.value)}
+                    className="mono"
+                    style={{ fontSize: 10, padding: '2px 4px', width: 80, border: '1px solid var(--line)', background: 'var(--surface-2)', borderRadius: 4 }}
+                    autoFocus
+                    onBlur={() => setEditingWeatherCity(false)}
+                  />
+                </form>
+              ) : (
+                <span className="weather-loc mono" onClick={() => { setEditingWeatherCity(true); setWeatherInput(weatherCity); }} title="Click to change city">
+                  📍 {weatherData?.city || weatherCity}
+                </span>
+              )}
+            </div>
+            <div className="weather-widget">
+              {weatherData ? (
+                <>
+                  <div className="weather-main">
+                    <span style={{ fontSize: 32 }}>
+                      {weatherData.desc.toLowerCase().includes('sun') || weatherData.desc.toLowerCase().includes('clear') ? '☀️'
+                        : weatherData.desc.toLowerCase().includes('cloud') ? '⛅'
+                        : weatherData.desc.toLowerCase().includes('rain') || weatherData.desc.toLowerCase().includes('drizzle') ? '🌧️'
+                        : weatherData.desc.toLowerCase().includes('snow') ? '🌨️'
+                        : weatherData.desc.toLowerCase().includes('thunder') ? '⛈️'
+                        : '🌫️'}
+                    </span>
+                    <span className="weather-temp mono">{weatherData.temp}°C</span>
+                  </div>
+                  <div className="weather-desc mono">{weatherData.desc}</div>
+                  <div className="mono" style={{ fontSize: 9, color: 'var(--text-3)', display: 'flex', gap: 10 }}>
+                    <span>💧 {weatherData.humidity}%</span>
+                    <span>💨 {weatherData.wind} km/h</span>
+                  </div>
+                </>
+              ) : (
+                <div className="muted" style={{ fontSize: 11 }}>Loading weather...</div>
+              )}
+            </div>
+          </div>
+        );
+      case 'quick_search':
+        return (
+          <div className="card bento-card" style={{ height: '100%', boxSizing: 'border-box' }}>
+            <div className="qsearch-widget">
+              <form onSubmit={handleSearchSubmit}>
+                <div className="qsearch-input-wrap">
+                  <input
+                    className="qsearch-input mono"
+                    value={searchQuery}
+                    onChange={(e) => setSearchQuery(e.target.value)}
+                    placeholder={
+                      searchEngine === 'dashboard' ? 'Search tabs (e.g. samba, files)...'
+                      : searchEngine === 'google' ? 'Search Google...'
+                      : 'Search DuckDuckGo...'
+                    }
+                  />
+                </div>
+              </form>
+              <div className="qsearch-engines">
+                <button
+                  type="button"
+                  className={`qsearch-engine-btn mono ${searchEngine === 'dashboard' ? 'active' : ''}`}
+                  onClick={() => setSearchEngine('dashboard')}
+                >
+                  Dashboard
+                </button>
+                <button
+                  type="button"
+                  className={`qsearch-engine-btn mono ${searchEngine === 'google' ? 'active' : ''}`}
+                  onClick={() => setSearchEngine('google')}
+                >
+                  Google
+                </button>
+                <button
+                  type="button"
+                  className={`qsearch-engine-btn mono ${searchEngine === 'ddg' ? 'active' : ''}`}
+                  onClick={() => setSearchEngine('ddg')}
+                >
+                  DuckDuckGo
+                </button>
+              </div>
+            </div>
+          </div>
+        );
+      case 'system_gauges':
+        return (
+          <div className="card bento-card" style={{ height: '100%', boxSizing: 'border-box' }}>
+            <div className="card-head"><h3>System Status</h3></div>
+            <div className="gauges-row">
+              <div className="gauge-item">
+                <Gauge value={stats.cpu || 0} label="" sub="" size={64} />
+                <span className="gauge-label-compact">CPU</span>
+              </div>
+              <div className="gauge-item">
+                <Gauge value={stats.ram || 0} label="" sub="" size={64} />
+                <span className="gauge-label-compact">RAM</span>
+              </div>
+              <div className="gauge-item">
+                <Gauge value={diskStats.pct || 0} label="" sub="" size={64} />
+                <span className="gauge-label-compact">Disk</span>
+              </div>
+            </div>
+          </div>
+        );
+      case 'memo':
+        return (
+          <div className="card bento-card" style={{ height: '100%', boxSizing: 'border-box' }}>
+            <div className="card-head">
+              <h3>Notes</h3>
+              <span className="mono muted" style={{ fontSize: 9 }}>saved locally</span>
+            </div>
+            <div className="memo-widget">
+              <textarea
+                className="memo-textarea"
+                value={notes}
+                onChange={(e) => saveNotes(e.target.value)}
+                placeholder="Write down any notes or quick commands..."
+              />
+            </div>
+          </div>
+        );
       case 'host_info':
         return (
           <div className="card bento-card" style={{ height: '100%', boxSizing: 'border-box' }}>
@@ -452,15 +744,42 @@ function Overview({ onNav }) {
           <KpiCard label="SSH Servers" value={sshCount.toString()} sub="saved connections" onClick={() => onNav('ssh')} colorClass="kpi-amber" />
         </div>
 
-        <div style={{ display: 'flex', justifyContent: 'flex-end', marginBottom: 4 }}>
-          <button className="btn-ghost sm" onClick={() => setCustomizing(true)} style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 11 }}>
-            ⚙ Customize Layout
-          </button>
+        <div style={{ display: 'flex', justifyContent: 'flex-end', marginBottom: 4, gap: 8 }}>
+          {customizing ? (
+            <>
+              <button
+                type="button"
+                className="btn-ghost sm"
+                onClick={() => setCustomizing(false)}
+                style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 11, background: 'var(--accent-soft)', color: 'var(--accent)', border: '1px solid var(--accent-line)' }}
+              >
+                ✓ Done Customizing
+              </button>
+              <button
+                type="button"
+                className="btn-ghost sm"
+                onClick={() => setShowLayoutModal(true)}
+                style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 11 }}
+              >
+                ⚙ Hidden Widgets
+              </button>
+            </>
+          ) : (
+            <button
+              type="button"
+              className="btn-ghost sm"
+              onClick={() => setCustomizing(true)}
+              style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 11 }}
+            >
+              ⚙ Customize Layout
+            </button>
+          )}
         </div>
 
         {/* Bento / Resources Customizable Grid */}
         <div className="custom-bento-grid">
-          {layout.filter(w => w.visible).map(w => {
+          {layout.map((w, index) => {
+            if (!w.visible) return null;
             const content = renderWidget(w.id);
             if (!content) return null;
 
@@ -469,7 +788,36 @@ function Overview({ onNav }) {
             if (w.width === 'third') span = 2;
 
             return (
-              <div key={w.id} style={{ gridColumn: `span ${span}`, minWidth: 260 }}>
+              <div
+                key={w.id}
+                draggable={customizing}
+                onDragStart={() => handleDragStart(index)}
+                onDragOver={(e) => handleDragOver(e, index)}
+                onDrop={() => handleDrop(index)}
+                onDragEnd={handleDragEnd}
+                className={`grid-item-container ${customizing ? 'widget-customizing' : ''} ${dragOverIndex === index ? 'widget-drag-over' : ''}`}
+                style={{ gridColumn: `span ${span}`, minWidth: 260, display: 'flex', flexDirection: 'column' }}
+              >
+                {customizing && (
+                  <div className="widget-custom-controls">
+                    <button
+                      type="button"
+                      className="btn-ghost sm"
+                      onClick={(e) => { e.stopPropagation(); changeWidth(index, w.width); }}
+                      style={{ fontSize: 9, padding: '2px 4px' }}
+                    >
+                      ↔ {w.width.toUpperCase()}
+                    </button>
+                    <button
+                      type="button"
+                      className="btn-ghost sm"
+                      onClick={(e) => { e.stopPropagation(); hideWidgetDirectly(index); }}
+                      style={{ fontSize: 9, padding: '2px 4px', color: 'var(--err)' }}
+                    >
+                      ✕ Hide
+                    </button>
+                  </div>
+                )}
                 {content}
               </div>
             );
@@ -477,8 +825,8 @@ function Overview({ onNav }) {
         </div>
       </div>
 
-      {customizing && (
-        <Modal title="Customize Dashboard Layout" onClose={() => setCustomizing(false)}>
+      {showLayoutModal && (
+        <Modal title="Customize Dashboard Layout" onClose={() => setShowLayoutModal(false)}>
           <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
             <p className="muted" style={{ fontSize: 12 }}>Toggle widget visibility and click the arrow keys to rearrange their layout order.</p>
             <div style={{ display: 'flex', flexDirection: 'column', gap: 8, maxHeight: 300, overflowY: 'auto', paddingRight: 4 }}>
@@ -495,7 +843,7 @@ function Overview({ onNav }) {
             </div>
             <div style={{ display: 'flex', justifyContent: 'space-between', marginTop: 12 }}>
               <button className="btn-ghost" onClick={resetLayout}>Reset to default</button>
-              <button className="btn-accent" onClick={() => setCustomizing(false)}>Close</button>
+              <button className="btn-accent" onClick={() => setShowLayoutModal(false)}>Close</button>
             </div>
           </div>
         </Modal>
@@ -2062,7 +2410,7 @@ function FilesTab() {
   const [searchQuery, setSearchQuery] = useState('');
   const [sortBy, setSortBy] = useState('name'); // name, size, mtime
   const [sortOrder, setSortOrder] = useState('asc'); // asc, desc
-  const [viewMode, setViewMode] = useState('list'); // list, grid
+  const [viewMode, setViewMode] = useState('grid'); // list, grid
   const [showSidebar, setShowSidebar] = useState(() => typeof window !== 'undefined' ? window.innerWidth >= 768 : true);
 
   // Multi-select, drag/drop, search overlay, image preview, rename, path editor, context menu
@@ -2863,7 +3211,6 @@ function FilesTab() {
                 {selectedItem && <button type="button" className="btn-ghost sm" style={{ color: 'var(--err)' }} onClick={() => deleteItem(selectedItem)}>Delete</button>}
               </div>
 
-              {/* File list pane */}
               {viewMode === 'list' ? (
                 /* List View */
                 <div className="card files-list-card" style={{ overflow: 'auto', flex: 1, display: 'flex', flexDirection: 'column' }}>
@@ -2882,6 +3229,7 @@ function FilesTab() {
                     <div className="col-mtime" style={{ width: 118, flexShrink: 0, paddingLeft: 8, cursor: 'pointer' }} onClick={() => { setSortBy('mtime'); setSortOrder(prev => prev === 'asc' ? 'desc' : 'asc'); }}>
                       Modified {sortBy === 'mtime' && (sortOrder === 'asc' ? '▴' : '▾')}
                     </div>
+                    <div style={{ width: 32, flexShrink: 0 }} />
                   </div>
 
                   <div style={{ overflowY: 'auto', flex: 1 }}>
@@ -2901,6 +3249,27 @@ function FilesTab() {
                         <div className="col-owner" style={{ width: 78, flexShrink: 0, paddingLeft: 8, fontFamily: 'var(--font-mono)', fontSize: 11, color: 'var(--text-3)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{f.owner}</div>
                         <div className="col-mode" style={{ width: 88, flexShrink: 0, paddingLeft: 8, fontFamily: 'var(--font-mono)', fontSize: 11, color: 'var(--text-3)' }}>{f.perm}</div>
                         <div className="col-mtime" style={{ width: 118, flexShrink: 0, paddingLeft: 8, fontSize: 11, color: 'var(--text-3)' }}>{f.mtime}</div>
+                        <div style={{ width: 32, flexShrink: 0, textAlign: 'center' }}>
+                          <button
+                            type="button"
+                            className="btn-ghost sm"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              const rect = e.currentTarget.getBoundingClientRect();
+                              setCtxMenu({ x: rect.left - 120, y: rect.bottom + window.scrollY, item: f, isDir: true });
+                            }}
+                            style={{
+                              padding: '2px 6px',
+                              fontSize: 14,
+                              border: 0,
+                              cursor: 'pointer',
+                              background: 'transparent',
+                              color: 'var(--text-3)'
+                            }}
+                          >
+                            ⋮
+                          </button>
+                        </div>
                       </div>
                     ))}
 
@@ -2917,6 +3286,27 @@ function FilesTab() {
                         <div className="col-owner" style={{ width: 78, flexShrink: 0, paddingLeft: 8, fontFamily: 'var(--font-mono)', fontSize: 11, color: 'var(--text-3)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{f.owner}</div>
                         <div className="col-mode" style={{ width: 88, flexShrink: 0, paddingLeft: 8, fontFamily: 'var(--font-mono)', fontSize: 11, color: 'var(--text-3)' }}>{f.perm}</div>
                         <div className="col-mtime" style={{ width: 118, flexShrink: 0, paddingLeft: 8, fontSize: 11, color: 'var(--text-3)' }}>{f.mtime}</div>
+                        <div style={{ width: 32, flexShrink: 0, textAlign: 'center' }}>
+                          <button
+                            type="button"
+                            className="btn-ghost sm"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              const rect = e.currentTarget.getBoundingClientRect();
+                              setCtxMenu({ x: rect.left - 120, y: rect.bottom + window.scrollY, item: f, isDir: false });
+                            }}
+                            style={{
+                              padding: '2px 6px',
+                              fontSize: 14,
+                              border: 0,
+                              cursor: 'pointer',
+                              background: 'transparent',
+                              color: 'var(--text-3)'
+                            }}
+                          >
+                            ⋮
+                          </button>
+                        </div>
                       </div>
                     ))}
 
@@ -2928,34 +3318,63 @@ function FilesTab() {
               ) : (
                 /* Bento Grid View */
                 <div className="card" style={{ overflow: 'auto', flex: 1, display: 'flex', flexDirection: 'column', padding: 12 }}>
-                  <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(110px, 1fr))', gap: 10, flex: 1 }}>
+                  <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(110px, 1fr))', gap: 10, alignContent: 'start', flex: 1 }}>
                     {loading && <div style={{ gridColumn: '1 / -1', padding: 24, textAlign: 'center', color: 'var(--text-3)' }}>Loading…</div>}
 
                     {!loading && filteredFolders.map(f => (
                       <div
                         key={f.name}
                         onClick={() => handleRowClick(f, true)}
+                        title={f.name}
                         style={{
                           display: 'flex',
                           flexDirection: 'column',
                           alignItems: 'center',
                           justifyContent: 'center',
-                          padding: '12px 6px',
+                          padding: '10px 8px',
                           borderRadius: 8,
                           background: selected === f.name ? 'var(--accent-soft)' : 'var(--bg-2)',
                           border: selected === f.name ? '1px solid var(--accent)' : '1px solid var(--line)',
                           cursor: 'pointer',
                           textAlign: 'center',
                           transition: 'transform 0.15s ease, border-color 0.15s ease',
-                          gap: 6,
-                          minHeight: 100,
-                          boxSizing: 'border-box'
+                          gap: 4,
+                          height: 105,
+                          boxSizing: 'border-box',
+                          position: 'relative'
                         }}
                         onMouseEnter={e => e.currentTarget.style.transform = 'scale(1.03)'}
                         onMouseLeave={e => e.currentTarget.style.transform = 'scale(1)'}
                       >
+                        <button
+                          type="button"
+                          className="btn-ghost sm"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            const rect = e.currentTarget.getBoundingClientRect();
+                            setCtxMenu({ x: rect.left, y: rect.bottom + window.scrollY, item: f, isDir: true });
+                          }}
+                          style={{
+                            position: 'absolute',
+                            top: 4,
+                            right: 4,
+                            padding: '2px 6px',
+                            fontSize: 14,
+                            lineHeight: 1,
+                            borderRadius: 4,
+                            background: 'transparent',
+                            border: 0,
+                            opacity: 0.6,
+                            cursor: 'pointer',
+                            color: 'var(--text-3)'
+                          }}
+                          onMouseEnter={e => e.currentTarget.style.opacity = 1}
+                          onMouseLeave={e => e.currentTarget.style.opacity = 0.6}
+                        >
+                          ⋮
+                        </button>
                         <div style={{ fontSize: 28 }}>📁</div>
-                        <div style={{ fontSize: 11, fontWeight: 600, color: 'var(--accent)', overflow: 'hidden', textOverflow: 'ellipsis', display: '-webkit-box', WebkitLineClamp: 2, WebkitBoxOrient: 'vertical', width: '100%', wordBreak: 'break-all' }}>{f.name}</div>
+                        <div style={{ fontSize: 11, fontWeight: 600, color: 'var(--accent)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', width: '100%' }}>{f.name}</div>
                         <div style={{ fontSize: 9, color: 'var(--text-3)' }}>Dir</div>
                       </div>
                     ))}
@@ -2964,27 +3383,56 @@ function FilesTab() {
                       <div
                         key={f.name}
                         onClick={() => handleRowClick(f, false)}
+                        title={f.name}
                         style={{
                           display: 'flex',
                           flexDirection: 'column',
                           alignItems: 'center',
                           justifyContent: 'center',
-                          padding: '12px 6px',
+                          padding: '10px 8px',
                           borderRadius: 8,
                           background: selected === f.name ? 'var(--accent-soft)' : 'var(--bg-2)',
                           border: selected === f.name ? '1px solid var(--accent)' : '1px solid var(--line)',
                           cursor: 'pointer',
                           textAlign: 'center',
                           transition: 'transform 0.15s ease, border-color 0.15s ease',
-                          gap: 6,
-                          minHeight: 100,
-                          boxSizing: 'border-box'
+                          gap: 4,
+                          height: 105,
+                          boxSizing: 'border-box',
+                          position: 'relative'
                         }}
                         onMouseEnter={e => e.currentTarget.style.transform = 'scale(1.03)'}
                         onMouseLeave={e => e.currentTarget.style.transform = 'scale(1)'}
                       >
+                        <button
+                          type="button"
+                          className="btn-ghost sm"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            const rect = e.currentTarget.getBoundingClientRect();
+                            setCtxMenu({ x: rect.left, y: rect.bottom + window.scrollY, item: f, isDir: false });
+                          }}
+                          style={{
+                            position: 'absolute',
+                            top: 4,
+                            right: 4,
+                            padding: '2px 6px',
+                            fontSize: 14,
+                            lineHeight: 1,
+                            borderRadius: 4,
+                            background: 'transparent',
+                            border: 0,
+                            opacity: 0.6,
+                            cursor: 'pointer',
+                            color: 'var(--text-3)'
+                          }}
+                          onMouseEnter={e => e.currentTarget.style.opacity = 1}
+                          onMouseLeave={e => e.currentTarget.style.opacity = 0.6}
+                        >
+                          ⋮
+                        </button>
                         <div style={{ fontSize: 28, color: fileColor(f.name) }}>{fileIcon(f.name)}</div>
-                        <div style={{ fontSize: 11, fontWeight: 400, color: 'var(--text)', overflow: 'hidden', textOverflow: 'ellipsis', display: '-webkit-box', WebkitLineClamp: 2, WebkitBoxOrient: 'vertical', width: '100%', wordBreak: 'break-all' }}>{f.name}</div>
+                        <div style={{ fontSize: 11, fontWeight: 400, color: 'var(--text)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', width: '100%' }}>{f.name}</div>
                         <div style={{ fontSize: 9, color: 'var(--text-3)', fontFamily: 'var(--font-mono)' }}>{f.size}</div>
                       </div>
                     ))}
@@ -3011,6 +3459,102 @@ function FilesTab() {
           )}
         </div>
       </div>
+
+      {ctxMenu && (
+        <div
+          className="context-menu"
+          style={{
+            position: 'fixed',
+            top: ctxMenu.y,
+            left: ctxMenu.x,
+            zIndex: 1000,
+            background: 'var(--surface)',
+            border: '1px solid var(--line)',
+            borderRadius: 8,
+            boxShadow: '0 4px 16px rgba(0, 0, 0, 0.3)',
+            padding: '4px 0',
+            minWidth: 120,
+            fontSize: 12
+          }}
+          onClick={(e) => e.stopPropagation()}
+        >
+          {!ctxMenu.isDir && (
+            <button
+              type="button"
+              className="context-item"
+              onClick={() => { openFile(ctxMenu.item); setCtxMenu(null); }}
+              style={{ width: '100%', display: 'flex', alignItems: 'center', padding: '6px 12px', border: 0, background: 'transparent', color: 'inherit', textAlign: 'left', cursor: 'pointer' }}
+            >
+              👁 View
+            </button>
+          )}
+          {!ctxMenu.isDir && (
+            <button
+              type="button"
+              className="context-item"
+              onClick={() => { window.open(`/api/files/download?path=${encodeURIComponent(ctxMenu.item.path)}`); setCtxMenu(null); }}
+              style={{ width: '100%', display: 'flex', alignItems: 'center', padding: '6px 12px', border: 0, background: 'transparent', color: 'inherit', textAlign: 'left', cursor: 'pointer' }}
+            >
+              📥 Download
+            </button>
+          )}
+          <button
+            type="button"
+            className="context-item"
+            onClick={() => { setOp({ type: 'rename', item: ctxMenu.item, value: ctxMenu.item.name }); setCtxMenu(null); }}
+            style={{ width: '100%', display: 'flex', alignItems: 'center', padding: '6px 12px', border: 0, background: 'transparent', color: 'inherit', textAlign: 'left', cursor: 'pointer' }}
+          >
+            ✏️ Rename
+          </button>
+          <button
+            type="button"
+            className="context-item"
+            onClick={() => {
+              const dir = currentPath.replace(/\/$/, '');
+              const baseName = ctxMenu.item.name;
+              const di = baseName.lastIndexOf('.');
+              const copyName = di > 0 && !ctxMenu.isDir ? baseName.slice(0, di) + '_copy' + baseName.slice(di) : baseName + '_copy';
+              setOp({ type: 'copy', item: ctxMenu.item, value: dir + '/' + copyName });
+              setCtxMenu(null);
+            }}
+            style={{ width: '100%', display: 'flex', alignItems: 'center', padding: '6px 12px', border: 0, background: 'transparent', color: 'inherit', textAlign: 'left', cursor: 'pointer' }}
+          >
+            📋 Copy
+          </button>
+          <button
+            type="button"
+            className="context-item"
+            onClick={() => { setOp({ type: 'move', item: ctxMenu.item, value: ctxMenu.item.path }); setCtxMenu(null); }}
+            style={{ width: '100%', display: 'flex', alignItems: 'center', padding: '6px 12px', border: 0, background: 'transparent', color: 'inherit', textAlign: 'left', cursor: 'pointer' }}
+          >
+            📦 Move
+          </button>
+          <button
+            type="button"
+            className="context-item"
+            onClick={() => {
+              setCtxMenu(null);
+              const mode = prompt(`Permissions for "${ctxMenu.item?.name}" (octal):`, '0755');
+              if (!mode) return;
+              axios.post('/api/samba/permissions', { path: ctxMenu.item.path, mode })
+                .then(() => window.UI.toast({ kind: 'ok', title: 'Permissions updated', body: ctxMenu.item.name }))
+                .catch(e => window.UI.toast({ kind: 'err', title: 'Failed', body: e.response?.data?.error || e.message }));
+            }}
+            style={{ width: '100%', display: 'flex', alignItems: 'center', padding: '6px 12px', border: 0, background: 'transparent', color: 'inherit', textAlign: 'left', cursor: 'pointer' }}
+          >
+            🔒 Perms
+          </button>
+          <hr style={{ margin: '4px 0', border: 0, borderTop: '1px solid var(--line)' }} />
+          <button
+            type="button"
+            className="context-item"
+            onClick={() => { deleteItem(ctxMenu.item); setCtxMenu(null); }}
+            style={{ width: '100%', display: 'flex', alignItems: 'center', padding: '6px 12px', border: 0, background: 'transparent', color: 'var(--err)', textAlign: 'left', cursor: 'pointer' }}
+          >
+            🗑️ Delete
+          </button>
+        </div>
+      )}
         </>
       )}
     </div>
@@ -4449,13 +4993,32 @@ function TemperaturesTab() {
   );
 }
 
+// ─── Unified Packages (Updates + Search/Install) ─────────────────────────────
+function UnifiedPackagesTab() {
+  const [sub, setSub] = useState('updates');
+  return (
+    <div>
+      <div style={{ display: 'flex', gap: 4, marginBottom: 14 }}>
+        {[{ id: 'updates', label: 'Updates' }, { id: 'browse', label: 'Browse / Install' }].map(s => (
+          <button key={s.id} className={`tab-pill ${sub === s.id ? 'is-active' : ''}`} onClick={() => setSub(s.id)}>
+            {s.label}
+          </button>
+        ))}
+      </div>
+      {sub === 'updates' && <SystemUpdatesTab />}
+      {sub === 'browse'  && <PackagesTab />}
+    </div>
+  );
+}
+
 // ─── System (combined subtab panel) ──────────────────────────────────────────
 function SystemTab() {
   const [sub, setSub] = useState('processes');
   const subtabs = [
     { id: 'processes', label: 'Processes', glyph: '⊞' },
     { id: 'temps',     label: 'Temps',     glyph: '🌡' },
-    { id: 'updates',   label: 'Updates',   glyph: '↥' },
+    { id: 'packages',  label: 'Packages',  glyph: '◧' },
+    { id: 'metrics',   label: 'Metrics',   glyph: '◌' },
     { id: 'logs',      label: 'Logs',      glyph: '≡' },
     { id: 'network',   label: 'Network',   glyph: '⇌' },
     { id: 'units',     label: 'Units',     glyph: '⚙' },
@@ -4472,7 +5035,8 @@ function SystemTab() {
       </div>
       {sub === 'processes' && <ProcessesTab />}
       {sub === 'temps'     && <TemperaturesTab />}
-      {sub === 'updates'   && <SystemUpdatesTab />}
+      {sub === 'packages'  && <UnifiedPackagesTab />}
+      {sub === 'metrics'   && <MetricsTab />}
       {sub === 'logs'      && <LogsTab />}
       {sub === 'network'   && <NetworkTab />}
       {sub === 'units'     && <SystemdTab />}

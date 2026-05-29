@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useMemo, useRef } from 'react';
+import React, { useState, useEffect, useMemo, useRef, useCallback } from 'react';
 import axios from 'axios';
 import { Modal } from './ui-bridge.jsx';
 
@@ -14,13 +14,31 @@ function ShareEditor({ share, onSave, onClose }) {
   const [browseable, setBrowseable] = useState(share?.browseable ?? true);
   const [hideDotfiles, setHideDotfiles] = useState(share?.hideDotfiles ?? true);
   const [recycle, setRecycle] = useState(share?.recycle ?? false);
-  const [hostsAllow, setHostsAllow] = useState(share?.hostsAllow || '192.168.1.0/24');
+  const [hostsAllow, setHostsAllow] = useState(share?.hostsAllow || '');
   const [createMask, setCreateMask] = useState(share?.createMask || '0664');
   const [dirMask, setDirMask] = useState(share?.dirMask || '0775');
   const [advanced, setAdvanced] = useState(false);
   const [userInput, setUserInput] = useState('');
   const [allUsers, setAllUsers] = useState([]);
   const [browsing, setBrowsing] = useState(false);
+
+  useEffect(() => {
+    if (share) {
+      setHostsAllow(share.hostsAllow || '');
+    } else {
+      axios.get('/api/health')
+        .then(res => {
+          if (res.data?.subnetRange) {
+            setHostsAllow(res.data.subnetRange);
+          } else {
+            setHostsAllow('192.168.1.0/24');
+          }
+        })
+        .catch(() => {
+          setHostsAllow('192.168.1.0/24');
+        });
+    }
+  }, [share]);
 
   useEffect(() => {
     axios.get('/api/samba/users')
@@ -888,6 +906,161 @@ function PowerMenu({ onClose }) {
   );
 }
 
+// ─── Docker Containers ──────────────────────────────────────────────────────
+function DockerContainersTab() {
+  const [containers, setContainers] = useState([]);
+  const [loading, setLoading] = useState(false);
+  const [search, setSearch] = useState('');
+
+  const load = useCallback(async () => {
+    setLoading(true);
+    try {
+      const r = await axios.get('/api/docker/containers');
+      setContainers(r.data.containers || []);
+    } catch (e) {
+      window.UI.toast({ kind: 'err', title: 'Failed to load containers', body: e.response?.data?.error || e.message });
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    load();
+  }, [load]);
+
+  const handleAction = async (name, action) => {
+    const verb = action === 'remove' ? 'delete' : action;
+    const ok = await window.UI.confirm({
+      title: `${verb.charAt(0).toUpperCase() + verb.slice(1)} container?`,
+      body: `Are you sure you want to ${verb} container "${name}"?`,
+      confirmLabel: verb.charAt(0).toUpperCase() + verb.slice(1),
+      dangerous: action === 'remove' || action === 'stop'
+    });
+    if (!ok) return;
+
+    try {
+      await axios.post('/api/docker/control', { name, action });
+      window.UI.toast({ kind: 'ok', title: `Container ${action}ed`, body: name });
+      load();
+    } catch (e) {
+      window.UI.toast({ kind: 'err', title: `Failed to ${action}`, body: e.response?.data?.error || e.message });
+    }
+  };
+
+  const openTerminal = (name) => {
+    if (window.SESS) {
+      window.SESS.launch({
+        type: 'docker',
+        title: `term · ${name}`,
+        glyph: '🐳',
+        data: { container: name }
+      });
+    } else {
+      window.UI.toast({ kind: 'err', title: 'Error', body: 'Session manager not available.' });
+    }
+  };
+
+  const openLogs = (name) => {
+    if (window.SESS) {
+      window.SESS.launch({
+        type: 'logs',
+        title: `logs · ${name}`,
+        glyph: '≣',
+        data: { container: name }
+      });
+    } else {
+      window.UI.toast({ kind: 'err', title: 'Error', body: 'Session manager not available.' });
+    }
+  };
+
+  const filtered = containers.filter(c => {
+    const q = search.toLowerCase();
+    return (
+      (c.Names && c.Names.toLowerCase().includes(q)) ||
+      (c.Image && c.Image.toLowerCase().includes(q)) ||
+      (c.ID && c.ID.toLowerCase().includes(q))
+    );
+  });
+
+  return (
+    <div className="tab-docker-containers">
+      <div className="services-toolbar">
+        <div className="search" style={{ flex: 1 }}>
+          <span className="search-icon">⊕</span>
+          <input
+            value={search}
+            onChange={e => setSearch(e.target.value)}
+            placeholder="Search containers by name, image, or ID…"
+          />
+        </div>
+        <button className="btn-ghost" onClick={load} disabled={loading}>
+          {loading ? 'Refreshing…' : '↻ Refresh'}
+        </button>
+      </div>
+
+      <div className="card" style={{ overflow: 'auto' }}>
+        <table className="proc-table mono" style={{ width: '100%', fontSize: '12px' }}>
+          <thead>
+            <tr>
+              <th style={{ width: '100px' }}>Status</th>
+              <th>Name</th>
+              <th>Image</th>
+              <th>Ports</th>
+              <th style={{ width: '160px', textAlign: 'right' }}>Actions</th>
+            </tr>
+          </thead>
+          <tbody>
+            {filtered.map((c, i) => {
+              const isRunning = c.State === 'running';
+              const name = c.Names || c.ID;
+              return (
+                <tr key={c.ID || i}>
+                  <td>
+                    <span style={{
+                      padding: '1px 6px',
+                      borderRadius: '3px',
+                      fontSize: '10px',
+                      background: isRunning ? 'oklch(0.25 0.06 145)' : 'var(--surface-2)',
+                      border: isRunning ? '1px solid oklch(0.45 0.12 145)' : '1px solid var(--line)',
+                      color: isRunning ? 'oklch(0.75 0.15 145)' : 'var(--text-3)'
+                    }}>
+                      {c.State || 'unknown'}
+                    </span>
+                  </td>
+                  <td style={{ fontWeight: 'bold' }}>{name}</td>
+                  <td className="muted" style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={c.Image}>{c.Image}</td>
+                  <td className="muted" style={{ fontSize: '11px' }}>{c.Ports || '—'}</td>
+                  <td style={{ textAlign: 'right' }}>
+                    <div style={{ display: 'flex', gap: 6, justifyContent: 'flex-end', flexWrap: 'wrap' }}>
+                      {isRunning ? (
+                        <button className="btn-ghost sm" title="Stop container" onClick={() => handleAction(name, 'stop')} style={{ color: 'var(--err)' }}>■ Stop</button>
+                      ) : (
+                        <button className="btn-ghost sm" title="Start container" onClick={() => handleAction(name, 'start')} style={{ color: 'var(--ok)' }}>▶ Start</button>
+                      )}
+                      <button className="btn-ghost sm" title="Restart container" onClick={() => handleAction(name, 'restart')}>↻ Restart</button>
+                      <button className="btn-ghost sm" title="Terminal" onClick={() => openTerminal(name)}>🐚 Term</button>
+                      <button className="btn-ghost sm" title="Logs" onClick={() => openLogs(name)}>≣ Logs</button>
+                      <button className="icon-btn" title="Remove" onClick={() => handleAction(name, 'remove')} style={{ color: 'var(--err)', marginLeft: 4 }}>✕</button>
+                    </div>
+                  </td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+        {filtered.length === 0 && (
+          <div className="empty muted" style={{ padding: 24 }}>
+            {containers.length === 0 ? 'No Docker containers found' : 'No containers match search query'}
+          </div>
+        )}
+      </div>
+      <div className="mono muted" style={{ fontSize: '10px', marginTop: '6px' }}>
+        {filtered.length} container{filtered.length !== 1 ? 's' : ''}
+      </div>
+    </div>
+  );
+}
+
 // ─── Docker Images ─────────────────────────────────────────────────────────
 function DockerImagesTab() {
   const [images, setImages] = useState([]);
@@ -1247,7 +1420,7 @@ function StacksTab() {
 export {
   ShareEditor, ShareBrowser,
   SystemUpdatesTab, SSHKeysPanel,
-  DockerImagesTab,
+  DockerContainersTab, DockerImagesTab,
   StacksTab,
   PowerMenu, FormField, ToggleField, SectionLabel,
 };

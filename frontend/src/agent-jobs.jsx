@@ -1,3 +1,4 @@
+import './agent-jobs.css';
 import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import axios from 'axios';
 import { FolderBrowserModal } from './code-workspace.jsx';
@@ -28,7 +29,6 @@ const ORDINAL = (n) => {
   return n + (s[(v - 20) % 10] || s[v] || s[0]);
 };
 
-// Parse a 5-part cron string into { min, hour, dom, month, dow }
 function parseCronParts(cron) {
   if (!cron) return null;
   const p = cron.trim().split(/\s+/);
@@ -51,8 +51,6 @@ function parseDow(dow) {
   return nums;
 }
 
-// Compute the next datetime a cron expression matches, starting after `from`.
-// Brute-force forward in 1-minute steps with a 1-year ceiling.
 function nextRunFromCron(cron, from = new Date()) {
   if (!cron) return null;
   const fields = cron.trim().split(/\s+/);
@@ -63,8 +61,7 @@ function nextRunFromCron(cron, from = new Date()) {
     if (field.includes('/')) {
       const [s, step] = field.split('/');
       const startV = s === '*' ? 0 : +s;
-      const stp = +step || 1;
-      return (val - startV) % stp === 0;
+      return (val - startV) % (+step || 1) === 0;
     }
     if (field.includes('-')) {
       const [s, e] = field.split('-').map(Number);
@@ -108,7 +105,7 @@ function fmtAgo(ts) {
 function fmtIn(ts) {
   if (!ts) return '—';
   const diff = new Date(ts).getTime() - Date.now();
-  if (diff < 0) return 'now';
+  if (diff < 0) return 'due now';
   if (diff < 60000) return 'in <1m';
   if (diff < 3600000) return `in ${Math.floor(diff / 60000)}m`;
   if (diff < 86400000) return `in ${Math.floor(diff / 3600000)}h ${Math.floor((diff % 3600000) / 60000)}m`;
@@ -121,9 +118,8 @@ function fmtNextRun(date) {
   return new Intl.DateTimeFormat(undefined, opts).format(date);
 }
 
-// Build a cron string from the Simple-mode state.
 function buildSimpleCron({ kind, interval, unit, hour, minute, weekDays, monthDay }) {
-  if (kind === 'manual') return '';
+  if (kind !== 'recurring') return '';
   const i = Math.max(1, parseInt(interval, 10) || 1);
   const m = Math.max(0, Math.min(59, parseInt(minute, 10) || 0));
   const h = Math.max(0, Math.min(23, parseInt(hour, 10) || 0));
@@ -135,57 +131,42 @@ function buildSimpleCron({ kind, interval, unit, hour, minute, weekDays, monthDa
       if (!weekDays?.length) return `${m} ${h} * * *`;
       return `${m} ${h} * * ${[...weekDays].sort((a, b) => a - b).join(',')}`;
     }
-    case 'month':  return `${m} ${h} ${monthDay || 1} * *`;
-    default:       return '';
+    case 'month': return `${m} ${h} ${monthDay || 1} * *`;
+    default: return '';
   }
 }
 
-// Try to detect a Simple-mode state from a cron string. Returns null if not representable.
 function detectSimple(cron) {
   if (!cron) return { kind: 'manual', interval: 1, unit: 'day', hour: 9, minute: 0, weekDays: [1,2,3,4,5], monthDay: 1 };
   const p = parseCronParts(cron);
   if (!p) return null;
   const { min: m, hour: h, dom, month, dow } = p;
   if (month !== '*') return null;
-
   const base = { kind: 'recurring', interval: 1, unit: 'day', hour: 9, minute: 0, weekDays: [1,2,3,4,5], monthDay: 1 };
-
-  // every minute
   if (m === '*' && h === '*' && dom === '*' && dow === '*') return { ...base, unit: 'minute', interval: 1 };
-  // every N minutes
   const minStep = m.match(/^\*\/(\d+)$/);
   if (minStep && h === '*' && dom === '*' && dow === '*') return { ...base, unit: 'minute', interval: +minStep[1] };
-
   if (!/^\d+$/.test(m)) return null;
   const minV = +m;
-
-  // every hour at minute M
   if (h === '*' && dom === '*' && dow === '*') return { ...base, unit: 'hour', interval: 1, minute: minV };
   const hrStep = h.match(/^\*\/(\d+)$/);
   if (hrStep && dom === '*' && dow === '*') return { ...base, unit: 'hour', interval: +hrStep[1], minute: minV };
-
   if (!/^\d+$/.test(h)) return null;
   const hourV = +h;
-
-  // Weekly: dow set, dom *
   if (dom === '*' && dow !== '*') {
     const days = parseDow(dow);
     if (!days.length) return null;
     return { ...base, unit: 'week', interval: 1, hour: hourV, minute: minV, weekDays: days };
   }
-  // Daily
   if (dom === '*' && dow === '*') return { ...base, unit: 'day', interval: 1, hour: hourV, minute: minV };
   const domStep = dom.match(/^\*\/(\d+)$/);
   if (domStep && dow === '*') return { ...base, unit: 'day', interval: +domStep[1], hour: hourV, minute: minV };
-  // Monthly
   if (/^\d+$/.test(dom) && dow === '*') return { ...base, unit: 'month', interval: 1, hour: hourV, minute: minV, monthDay: +dom };
-
   return null;
 }
 
-// Human-readable description of any cron.
 function cronToEnglish(cron) {
-  if (!cron) return 'Runs manually — no schedule.';
+  if (!cron) return 'No schedule — run manually.';
   const p = parseCronParts(cron);
   if (!p) return 'Invalid cron expression.';
   const detected = detectSimple(cron);
@@ -201,7 +182,6 @@ function cronToEnglish(cron) {
         const names = [...detected.weekDays].sort((a, b) => a - b).map(d => WEEKDAYS.find(w => w.value === d)?.label).filter(Boolean);
         return names.length === 7 ? `Runs every day at ${t}.` :
                names.length === 5 && names.every(n => ['Mon','Tue','Wed','Thu','Fri'].includes(n)) ? `Runs every weekday at ${t}.` :
-               names.length === 2 && names.every(n => ['Sat','Sun'].includes(n)) ? `Runs every weekend day at ${t}.` :
                `Runs on ${names.join(', ')} at ${t}.`;
       }
       case 'month':  return `Runs on the ${ORDINAL(detected.monthDay)} of each month at ${t}.`;
@@ -210,195 +190,212 @@ function cronToEnglish(cron) {
   return `Custom: ${cron}`;
 }
 
+// Local datetime string for <input type="datetime-local">
+function toLocalDTString(iso) {
+  if (!iso) return '';
+  const d = new Date(iso);
+  const pad = n => String(n).padStart(2, '0');
+  return `${d.getFullYear()}-${pad(d.getMonth()+1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
+}
+
+// Default datetime ~5min from now
+function defaultRunAt() {
+  const d = new Date(Date.now() + 5 * 60000);
+  d.setSeconds(0, 0);
+  return d.toISOString();
+}
+
 const AGENT_GLYPHS = { claude: '💬', 'claude-code': '💬', gemini: '✦', antigravity: '🚀', codex: '⬡', opencode: '🔏', kilocode: '⚡', kilo: '⚡', ollama: '🦙', shell: '›_', aider: '🤖' };
 
-// ─── Schedule Picker (Simple / Advanced two-mode) ─────────────────────────────
-function SchedulePicker({ value, onChange, tz }) {
-  const initial = useMemo(() => detectSimple(value), [value]);
-  const [mode, setMode] = useState(initial ? 'simple' : 'advanced');
+// ─── Schedule Picker ──────────────────────────────────────────────────────────
+// Emits { schedule, runAt } — schedule is cron string (recurring), runAt is ISO (one-time)
+function SchedulePicker({ schedule: initSchedule, runAt: initRunAt, onChange, tz }) {
+  const initial = useMemo(() => detectSimple(initSchedule), [initSchedule]);
+  const initMode = initRunAt ? 'once' : (initSchedule ? (initial ? 'simple' : 'advanced') : 'manual');
 
-  // Simple-mode state
-  const def = initial || { kind: 'manual', interval: 1, unit: 'day', hour: 9, minute: 0, weekDays: [1,2,3,4,5], monthDay: 1 };
-  const [kind,     setKind]     = useState(def.kind);
+  const [mode, setMode]         = useState(initMode);
+  const [runAt, setRunAt]       = useState(initRunAt || defaultRunAt());
+  const [advanced, setAdvanced] = useState(initSchedule || '');
+
+  const def = initial || { kind: 'recurring', interval: 1, unit: 'day', hour: 9, minute: 0, weekDays: [1,2,3,4,5], monthDay: 1 };
   const [interval, setInterval] = useState(def.interval);
   const [unit,     setUnit]     = useState(def.unit);
   const [hour,     setHour]     = useState(def.hour);
   const [minute,   setMinute]   = useState(def.minute);
   const [weekDays, setWeekDays] = useState(def.weekDays);
   const [monthDay, setMonthDay] = useState(def.monthDay);
-  const [advanced, setAdvanced] = useState(value || '');
 
-  const cron = useMemo(() => {
-    if (mode === 'advanced') return advanced.trim();
-    return buildSimpleCron({ kind, interval, unit, hour, minute, weekDays, monthDay });
-  }, [mode, advanced, kind, interval, unit, hour, minute, weekDays, monthDay]);
+  const simpleCron = useMemo(() =>
+    buildSimpleCron({ kind: 'recurring', interval, unit, hour, minute, weekDays, monthDay }),
+    [interval, unit, hour, minute, weekDays, monthDay]
+  );
 
-  // Notify parent when cron changes
-  const lastRef = useRef(value);
+  const emitRef = useRef(null);
   useEffect(() => {
-    if (cron !== lastRef.current) { lastRef.current = cron; onChange(cron); }
-  }, [cron, onChange]);
-
-  // When user switches to Simple mode, try to parse the advanced cron back in
-  const handleModeSwitch = (target) => {
-    if (target === 'simple' && mode === 'advanced') {
-      const parsed = detectSimple(advanced.trim());
-      if (parsed) {
-        setKind(parsed.kind); setInterval(parsed.interval); setUnit(parsed.unit);
-        setHour(parsed.hour); setMinute(parsed.minute);
-        setWeekDays(parsed.weekDays); setMonthDay(parsed.monthDay);
-        setMode('simple');
-      } else {
-        window.UI?.toast?.({ kind: 'warn', title: 'Cannot simplify', body: 'This cron expression has no Simple equivalent.' });
-      }
-      return;
-    }
-    if (target === 'advanced' && mode === 'simple') {
-      setAdvanced(cron);
-    }
-    setMode(target);
-  };
+    let schedule = null, newRunAt = null;
+    if (mode === 'once')     newRunAt = runAt ? new Date(runAt).toISOString() : null;
+    else if (mode === 'simple')   schedule = simpleCron || null;
+    else if (mode === 'advanced') schedule = advanced.trim() || null;
+    const val = { schedule, runAt: newRunAt };
+    const key = JSON.stringify(val);
+    if (emitRef.current !== key) { emitRef.current = key; onChange(val); }
+  }, [mode, runAt, simpleCron, advanced, onChange]);
 
   const toggleDay = (d) =>
     setWeekDays(prev => prev.includes(d) ? prev.filter(x => x !== d) : [...prev, d]);
 
-  const next = useMemo(() => nextRunFromCron(cron), [cron]);
-  const advanceValid = mode !== 'advanced' || !advanced.trim() || parseCronParts(advanced.trim()) !== null;
+  const next = mode === 'simple' ? nextRunFromCron(simpleCron) : mode === 'advanced' ? nextRunFromCron(advanced.trim()) : null;
+  const cronDisplay = mode === 'simple' ? simpleCron : advanced.trim();
 
-  const showTimeRow = unit === 'day' || unit === 'week' || unit === 'month';
-  const showMinuteOnly = unit === 'hour';
+  const MODES = [
+    { id: 'manual',   label: 'Manual' },
+    { id: 'once',     label: 'Run Once' },
+    { id: 'simple',   label: 'Recurring' },
+    { id: 'advanced', label: 'Cron' },
+  ];
 
   return (
     <div className="sp-root">
-      {/* Mode tabs */}
       <div className="sp-mode-tabs">
-        <button type="button" className={`sp-mode-tab ${mode === 'simple' ? 'is-active' : ''}`} onClick={() => handleModeSwitch('simple')}>Simple</button>
-        <button type="button" className={`sp-mode-tab ${mode === 'advanced' ? 'is-active' : ''}`} onClick={() => handleModeSwitch('advanced')}>Advanced</button>
+        {MODES.map(m => (
+          <button key={m.id} type="button"
+            className={`sp-mode-tab ${mode === m.id ? 'is-active' : ''}`}
+            onClick={() => setMode(m.id)}>
+            {m.label}
+          </button>
+        ))}
       </div>
 
-      {/* Simple mode */}
-      {mode === 'simple' && (
+      {mode === 'manual' && (
+        <div className="sp-body sp-body--empty">
+          <span className="sp-muted">▶ Run manually using the Run Now button.</span>
+        </div>
+      )}
+
+      {mode === 'once' && (
         <div className="sp-body">
-          <div className="sp-row sp-row--kind">
-            <span className="sp-label">How often?</span>
-            <label className={`sp-radio ${kind === 'manual' ? 'is-on' : ''}`}>
-              <input type="radio" checked={kind === 'manual'} onChange={() => setKind('manual')} />
-              <span>Manual only</span>
-            </label>
-            <label className={`sp-radio ${kind === 'recurring' ? 'is-on' : ''}`}>
-              <input type="radio" checked={kind === 'recurring'} onChange={() => setKind('recurring')} />
-              <span>Recurring</span>
-            </label>
+          <div className="sp-row">
+            <span className="sp-label">Date &amp; time</span>
+            <input
+              type="datetime-local"
+              className="sp-datetime"
+              value={toLocalDTString(runAt)}
+              min={toLocalDTString(new Date().toISOString())}
+              onChange={e => {
+                const v = e.target.value;
+                if (v) setRunAt(new Date(v).toISOString());
+              }}
+            />
+            {tz && <span className="sp-tz">{tz}</span>}
           </div>
-
-          {kind === 'recurring' && (
-            <>
-              <div className="sp-row">
-                <span className="sp-label">Repeat every</span>
-                <input type="number" className="sp-num" min={1} max={59}
-                  value={interval} onChange={e => setInterval(Math.max(1, parseInt(e.target.value) || 1))} />
-                <select className="sp-sel" value={unit} onChange={e => setUnit(e.target.value)}>
-                  <option value="minute">{interval === 1 ? 'minute' : 'minutes'}</option>
-                  <option value="hour">{interval === 1 ? 'hour' : 'hours'}</option>
-                  <option value="day">{interval === 1 ? 'day' : 'days'}</option>
-                  <option value="week">week</option>
-                  <option value="month">month</option>
-                </select>
-              </div>
-
-              {showTimeRow && (
-                <div className="sp-row">
-                  <span className="sp-label">At time</span>
-                  <input type="time"
-                    className="sp-time"
-                    value={`${String(hour).padStart(2,'0')}:${String(minute).padStart(2,'0')}`}
-                    onChange={e => {
-                      const [h, m] = e.target.value.split(':').map(Number);
-                      if (!isNaN(h)) setHour(h);
-                      if (!isNaN(m)) setMinute(m);
-                    }}
-                  />
-                  {tz && <span className="sp-tz">{tz}</span>}
-                </div>
-              )}
-
-              {showMinuteOnly && (
-                <div className="sp-row">
-                  <span className="sp-label">At minute</span>
-                  <input type="number" className="sp-num" min={0} max={59}
-                    value={minute} onChange={e => setMinute(Math.max(0, Math.min(59, parseInt(e.target.value) || 0)))} />
-                  <span className="sp-hint">past each hour</span>
-                </div>
-              )}
-
-              {unit === 'week' && (
-                <div className="sp-row sp-row--days">
-                  <span className="sp-label">On days</span>
-                  <div className="sp-day-pills">
-                    {WEEKDAYS.map(d => (
-                      <button key={d.value} type="button"
-                        className={`sp-day-btn ${weekDays.includes(d.value) ? 'is-on' : ''}`}
-                        onClick={() => toggleDay(d.value)}
-                        title={d.label}>
-                        {d.short}
-                      </button>
-                    ))}
-                  </div>
-                  <div className="sp-day-presets">
-                    <button type="button" className="sp-preset-link" onClick={() => setWeekDays([1,2,3,4,5])}>Weekdays</button>
-                    <button type="button" className="sp-preset-link" onClick={() => setWeekDays([6,0])}>Weekend</button>
-                    <button type="button" className="sp-preset-link" onClick={() => setWeekDays([0,1,2,3,4,5,6])}>All</button>
-                  </div>
-                </div>
-              )}
-
-              {unit === 'month' && (
-                <div className="sp-row">
-                  <span className="sp-label">Day of month</span>
-                  <select className="sp-sel" value={monthDay} onChange={e => setMonthDay(+e.target.value)}>
-                    {Array.from({ length: 31 }, (_, i) => i + 1).map(d => (
-                      <option key={d} value={d}>{ORDINAL(d)}</option>
-                    ))}
-                  </select>
-                </div>
-              )}
-            </>
+          {runAt && (
+            <div className="sp-footer">
+              <span className="sp-next">⏰ <strong>{fmtNextRun(new Date(runAt))}</strong> <span className="sp-muted">({fmtIn(runAt)})</span></span>
+            </div>
           )}
         </div>
       )}
 
-      {/* Advanced mode */}
-      {mode === 'advanced' && (
+      {mode === 'simple' && (
         <div className="sp-body">
           <div className="sp-row">
-            <span className="sp-label">Cron expression</span>
-            <input className="sp-cron-input"
-              value={advanced}
-              onChange={e => setAdvanced(e.target.value)}
-              placeholder="min hr dom mon dow   e.g. 0 9 * * 1-5"
-              spellCheck={false} />
+            <span className="sp-label">Every</span>
+            <input type="number" className="sp-num" min={1} max={59}
+              value={interval} onChange={e => setInterval(Math.max(1, parseInt(e.target.value) || 1))} />
+            <select className="sp-sel" value={unit} onChange={e => setUnit(e.target.value)}>
+              <option value="minute">{interval === 1 ? 'minute' : 'minutes'}</option>
+              <option value="hour">{interval === 1 ? 'hour' : 'hours'}</option>
+              <option value="day">{interval === 1 ? 'day' : 'days'}</option>
+              <option value="week">week</option>
+              <option value="month">month</option>
+            </select>
           </div>
-          <div className="sp-advanced-help">
-            <span className="sp-hint">{cronToEnglish(advanced.trim())}</span>
-            {!advanceValid && <span className="sp-err">⚠ Invalid format (need 5 space-separated fields)</span>}
+
+          {(unit === 'day' || unit === 'week' || unit === 'month') && (
+            <div className="sp-row">
+              <span className="sp-label">At</span>
+              <input type="time" className="sp-time"
+                value={`${String(hour).padStart(2,'0')}:${String(minute).padStart(2,'0')}`}
+                onChange={e => {
+                  const [h, m] = e.target.value.split(':').map(Number);
+                  if (!isNaN(h)) setHour(h);
+                  if (!isNaN(m)) setMinute(m);
+                }}
+              />
+              {tz && <span className="sp-tz">{tz}</span>}
+            </div>
+          )}
+
+          {unit === 'hour' && (
+            <div className="sp-row">
+              <span className="sp-label">At minute</span>
+              <input type="number" className="sp-num" min={0} max={59}
+                value={minute} onChange={e => setMinute(Math.max(0, Math.min(59, parseInt(e.target.value) || 0)))} />
+              <span className="sp-hint">past each hour</span>
+            </div>
+          )}
+
+          {unit === 'week' && (
+            <div className="sp-row sp-row--days">
+              <span className="sp-label">On</span>
+              <div className="sp-day-pills">
+                {WEEKDAYS.map(d => (
+                  <button key={d.value} type="button"
+                    className={`sp-day-btn ${weekDays.includes(d.value) ? 'is-on' : ''}`}
+                    onClick={() => toggleDay(d.value)}>{d.short}</button>
+                ))}
+              </div>
+              <div className="sp-day-presets">
+                <button type="button" className="sp-preset-link" onClick={() => setWeekDays([1,2,3,4,5])}>Weekdays</button>
+                <button type="button" className="sp-preset-link" onClick={() => setWeekDays([6,0])}>Weekend</button>
+                <button type="button" className="sp-preset-link" onClick={() => setWeekDays([0,1,2,3,4,5,6])}>All</button>
+              </div>
+            </div>
+          )}
+
+          {unit === 'month' && (
+            <div className="sp-row">
+              <span className="sp-label">Day</span>
+              <select className="sp-sel" value={monthDay} onChange={e => setMonthDay(+e.target.value)}>
+                {Array.from({ length: 31 }, (_, i) => i + 1).map(d => (
+                  <option key={d} value={d}>{ORDINAL(d)}</option>
+                ))}
+              </select>
+              <span className="sp-hint">of each month</span>
+            </div>
+          )}
+
+          <div className="sp-footer">
+            {next ? (
+              <span className="sp-next">⏰ Next: <strong>{fmtNextRun(next)}</strong> <span className="sp-muted">({fmtIn(next)})</span></span>
+            ) : <span className="sp-muted">No upcoming match.</span>}
+            {cronDisplay && <code className="sp-cron-pill">{cronDisplay}</code>}
           </div>
         </div>
       )}
 
-      {/* Footer: next run + cron pill */}
-      <div className="sp-footer">
-        {next ? (
-          <span className="sp-next">⏰ Next: <strong>{fmtNextRun(next)}</strong> <span className="sp-muted">({fmtIn(next)}{tz ? ` · ${tz}` : ''})</span></span>
-        ) : (
-          <span className="sp-muted">{cron ? 'Cron is set but no upcoming match found.' : 'No automatic schedule.'}</span>
-        )}
-        {cron && <code className="sp-cron-pill" title="Cron expression">{cron}</code>}
-      </div>
+      {mode === 'advanced' && (
+        <div className="sp-body">
+          <div className="sp-row">
+            <span className="sp-label">Cron</span>
+            <input className="sp-cron-input"
+              value={advanced}
+              onChange={e => setAdvanced(e.target.value)}
+              placeholder="min hr dom mon dow — e.g. 0 9 * * 1-5"
+              spellCheck={false} />
+          </div>
+          <div className="sp-footer">
+            <span className="sp-hint">{cronToEnglish(advanced.trim())}</span>
+            {next && <span className="sp-next"> · Next: <strong>{fmtNextRun(next)}</strong> <span className="sp-muted">({fmtIn(next)})</span></span>}
+            {cronDisplay && <code className="sp-cron-pill">{cronDisplay}</code>}
+          </div>
+        </div>
+      )}
     </div>
   );
 }
 
-// ─── Status / Schedule labels ─────────────────────────────────────────────────
+// ─── Status badge ─────────────────────────────────────────────────────────────
 function StatusBadge({ status, size = 'md' }) {
   const m = STATUS_META[status] || STATUS_META.idle;
   return (
@@ -409,8 +406,13 @@ function StatusBadge({ status, size = 'md' }) {
   );
 }
 
-function ScheduleLabel({ schedule }) {
-  if (!schedule) return <span className="aj-muted">Manual only</span>;
+function ScheduleLabel({ schedule, runAt }) {
+  if (runAt) {
+    const d = new Date(runAt);
+    if (d > new Date()) return <span className="aj-mono aj-schedule-tag" title={runAt}>⏰ {fmtNextRun(d)}</span>;
+    return <span className="aj-muted">Once (past)</span>;
+  }
+  if (!schedule) return <span className="aj-muted">Manual</span>;
   const detected = detectSimple(schedule);
   const p = parseCronParts(schedule);
   let label = schedule;
@@ -422,9 +424,8 @@ function ScheduleLabel({ schedule }) {
       case 'hour':   label = detected.interval === 1 ? `Hourly :${pad(detected.minute)}` : `Every ${detected.interval}h`; break;
       case 'day':    label = detected.interval === 1 ? `Daily ${t}` : `Every ${detected.interval}d ${t}`; break;
       case 'week': {
-        const days = detected.weekDays.sort((a, b) => a - b).map(d => WEEKDAYS.find(w => w.value === d)?.short).join('');
-        label = `${days || '—'} ${t}`;
-        break;
+        const days = detected.weekDays.sort((a,b)=>a-b).map(d=>WEEKDAYS.find(w=>w.value===d)?.short).join('');
+        label = `${days || '—'} ${t}`; break;
       }
       case 'month': label = `${ORDINAL(detected.monthDay)} ${t}`; break;
     }
@@ -432,13 +433,103 @@ function ScheduleLabel({ schedule }) {
   return <span className="aj-mono aj-schedule-tag" title={schedule}>{label}</span>;
 }
 
-// ─── Job Card ─────────────────────────────────────────────────────────────────
+// ─── Live output via SSE ──────────────────────────────────────────────────────
+function LiveOutput({ jobId, runId, isRunning, existingOutput }) {
+  const [text, setText] = useState(existingOutput || '');
+  const [status, setStatus] = useState(isRunning ? 'running' : null);
+  const scrollRef = useRef(null);
+  const esRef = useRef(null);
+
+  // Reset only when switching to a different job/run — preserves SSE-accumulated text
+  // across the isRunning true→false transition so output isn't wiped on completion.
+  useEffect(() => {
+    setText(existingOutput || '');
+    setStatus(isRunning ? 'running' : null);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [jobId, runId]);
+
+  // Once the server confirms saved output for a completed run, display it.
+  useEffect(() => {
+    if (!isRunning && existingOutput) setText(existingOutput);
+  }, [isRunning, existingOutput]);
+
+  // SSE lifecycle — open on run start, close on completion.
+  useEffect(() => {
+    if (!isRunning) {
+      if (esRef.current) { esRef.current.close(); esRef.current = null; }
+      setStatus(null);
+      return;
+    }
+
+    const es = new EventSource(`/api/agent-jobs/${jobId}/stream`);
+    esRef.current = es;
+    let buf = '';
+
+    es.onmessage = (e) => {
+      try {
+        const d = JSON.parse(e.data);
+        if (d.type === 'chunk') { buf += d.text; setText(buf); }
+        else if (d.type === 'done') { setStatus(d.status); es.close(); }
+      } catch {}
+    };
+    es.onerror = () => es.close();
+
+    return () => { es.close(); esRef.current = null; };
+  }, [jobId, runId, isRunning]);
+
+  // Auto-scroll to bottom
+  useEffect(() => {
+    if (scrollRef.current) scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
+  }, [text]);
+
+  if (!text && !isRunning) return <span className="aj-muted aj-run-no-output">No output captured</span>;
+
+  return (
+    <div className="aj-live-output" ref={scrollRef}>
+      <pre className="aj-output-pre">{text}</pre>
+      {isRunning && <span className="aj-live-cursor">▌</span>}
+    </div>
+  );
+}
+
+// ─── Run history item ─────────────────────────────────────────────────────────
+function RunItem({ run, jobId, defaultOpen = false }) {
+  const [open, setOpen] = useState(defaultOpen);
+  const duration = run.completedAt
+    ? fmtDuration(new Date(run.completedAt) - new Date(run.startedAt))
+    : run.status === 'running' ? fmtDuration(Date.now() - new Date(run.startedAt)) : '—';
+  const isRunning = run.status === 'running';
+
+  return (
+    <div className={`aj-run-item ${isRunning ? 'is-live' : ''}`}>
+      <button className="aj-run-summary" onClick={() => setOpen(o => !o)}>
+        <StatusBadge status={run.status} size="sm" />
+        <span className="aj-run-time">{new Date(run.startedAt).toLocaleString()}</span>
+        <span className="aj-run-dur">{duration}</span>
+        <span className="aj-run-chevron">{open ? '▾' : '▸'}</span>
+      </button>
+      {open && (
+        <div className="aj-run-output">
+          <LiveOutput
+            jobId={jobId}
+            runId={run.id}
+            isRunning={isRunning}
+            existingOutput={run.output}
+          />
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ─── Job card (list item) ─────────────────────────────────────────────────────
 function JobCard({ job, isSelected, agents, workspaces, onClick }) {
   const agent = agents.find(a => a.id === job.agentId);
   const ws = workspaces.find(w => w.id === job.workspaceId);
   const glyph = AGENT_GLYPHS[job.agentId] || '✦';
   const lastRun = job.runs?.[0];
-  const next = job.schedule && job.enabled ? nextRunFromCron(job.schedule) : null;
+  const nextCron = job.schedule && job.enabled ? nextRunFromCron(job.schedule) : null;
+  const nextRun = job.runAt && new Date(job.runAt) > new Date() ? new Date(job.runAt) : nextCron;
 
   return (
     <button className={`aj-job-card ${isSelected ? 'is-selected' : ''} ${!job.enabled ? 'is-disabled' : ''}`} onClick={onClick}>
@@ -454,52 +545,23 @@ function JobCard({ job, isSelected, agents, workspaces, onClick }) {
         <StatusBadge status={job.isRunning ? 'running' : job.status} size="sm" />
       </div>
       <div className="aj-jc-bottom">
-        <ScheduleLabel schedule={job.schedule} />
+        <ScheduleLabel schedule={job.schedule} runAt={job.runAt} />
         <span className="aj-muted">
-          {next ? `Next ${fmtIn(next)}` : lastRun ? `Last ${fmtAgo(lastRun.startedAt)}` : 'Never run'}
+          {nextRun ? `Next ${fmtIn(nextRun)}` : lastRun ? `Last ${fmtAgo(lastRun.startedAt)}` : 'Never run'}
         </span>
       </div>
     </button>
   );
 }
 
-// ─── Run history item ─────────────────────────────────────────────────────────
-function RunItem({ run, defaultOpen = false }) {
-  const [open, setOpen] = useState(defaultOpen);
-  const duration = run.completedAt
-    ? fmtDuration(new Date(run.completedAt) - new Date(run.startedAt))
-    : run.status === 'running' ? fmtDuration(Date.now() - new Date(run.startedAt)) : '—';
-
-  return (
-    <div className="aj-run-item">
-      <button className="aj-run-summary" onClick={() => setOpen(o => !o)}>
-        <StatusBadge status={run.status} size="sm" />
-        <span className="aj-run-time">{new Date(run.startedAt).toLocaleString()}</span>
-        <span className="aj-run-dur">{duration}</span>
-        <span className="aj-run-chevron">{open ? '▾' : '▸'}</span>
-      </button>
-      {open && (
-        <div className="aj-run-output">
-          {run.output ? (
-            <pre className="aj-output-pre">{run.output}</pre>
-          ) : (
-            <span className="aj-muted aj-run-no-output">
-              {run.status === 'running' ? '⟳ Waiting for output…' : 'No output captured'}
-            </span>
-          )}
-        </div>
-      )}
-    </div>
-  );
-}
-
-// ─── Job detail ───────────────────────────────────────────────────────────────
-function JobDetail({ job, agents, workspaces, tz, onEdit, onRun, onCancel, onToggle, onDelete, onClone }) {
+// ─── Job detail (right pane) ──────────────────────────────────────────────────
+function JobDetail({ job, agents, workspaces, tz, onEdit, onRun, onCancel, onToggle, onDelete, onClone, onOpenTerminal }) {
   const agent = agents.find(a => a.id === job.agentId);
   const ws = workspaces.find(w => w.id === job.workspaceId);
   const isRunning = job.isRunning;
   const glyph = AGENT_GLYPHS[job.agentId] || '✦';
-  const next = job.schedule && job.enabled ? nextRunFromCron(job.schedule) : null;
+  const nextCron = job.schedule && job.enabled ? nextRunFromCron(job.schedule) : null;
+  const nextRun = job.runAt && new Date(job.runAt) > new Date() ? new Date(job.runAt) : nextCron;
 
   return (
     <div className="aj-detail">
@@ -510,6 +572,7 @@ function JobDetail({ job, agents, workspaces, tz, onEdit, onRun, onCancel, onTog
           <div className="aj-detail-sub">
             {agent?.label || job.agentId}
             {ws && <> · <span title={ws.cwd}>{ws.name}</span></>}
+            {tz && <> · <span className="aj-tz-inline">{tz}</span></>}
           </div>
         </div>
         <StatusBadge status={isRunning ? 'running' : job.status} />
@@ -521,12 +584,14 @@ function JobDetail({ job, agents, workspaces, tz, onEdit, onRun, onCancel, onTog
         ) : (
           <button className="aj-btn aj-btn--primary" onClick={onRun}>▶ Run Now</button>
         )}
+        {onOpenTerminal && (
+          <button className="aj-btn aj-btn--ghost" onClick={() => onOpenTerminal(job)} title="Open terminal">
+            ⌘ Terminal
+          </button>
+        )}
         <button className="aj-btn aj-btn--ghost" onClick={onEdit}>✏ Edit</button>
         <button className="aj-btn aj-btn--ghost" onClick={onClone}>⎘ Duplicate</button>
-        <button
-          className={`aj-btn aj-btn--ghost ${job.enabled ? '' : 'aj-btn--accent-outline'}`}
-          onClick={() => onToggle(!job.enabled)}
-        >
+        <button className={`aj-btn aj-btn--ghost ${job.enabled ? '' : 'aj-btn--accent-outline'}`} onClick={() => onToggle(!job.enabled)}>
           {job.enabled ? '⏸ Disable' : '▶ Enable'}
         </button>
         <button className="aj-btn aj-btn--ghost aj-btn--red" onClick={onDelete}>🗑 Delete</button>
@@ -535,21 +600,18 @@ function JobDetail({ job, agents, workspaces, tz, onEdit, onRun, onCancel, onTog
       <div className="aj-info-grid">
         <div className="aj-info-row">
           <span className="aj-info-label">Schedule</span>
-          <ScheduleLabel schedule={job.schedule} />
-          {job.schedule && <span className="aj-muted aj-info-aside">{cronToEnglish(job.schedule)}</span>}
+          <span>
+            <ScheduleLabel schedule={job.schedule} runAt={job.runAt} />
+            {job.schedule && <span className="aj-muted aj-info-aside">{cronToEnglish(job.schedule)}</span>}
+          </span>
         </div>
         <div className="aj-info-row">
           <span className="aj-info-label">Next run</span>
           <span>
-            {next ? (
-              <>
-                <strong>{fmtNextRun(next)}</strong>
-                <span className="aj-muted"> · {fmtIn(next)}{tz ? ` · ${tz}` : ''}</span>
-              </>
-            ) : job.schedule && !job.enabled ? (
-              <span className="aj-muted">Disabled</span>
+            {nextRun ? (
+              <><strong>{fmtNextRun(nextRun)}</strong> <span className="aj-muted">· {fmtIn(nextRun)}</span></>
             ) : (
-              <span className="aj-muted">Manual only</span>
+              <span className="aj-muted">{job.schedule && !job.enabled ? 'Disabled' : 'Manual only'}</span>
             )}
           </span>
         </div>
@@ -563,7 +625,7 @@ function JobDetail({ job, agents, workspaces, tz, onEdit, onRun, onCancel, onTog
         </div>
         <div className="aj-info-row">
           <span className="aj-info-label">Workspace</span>
-          <span title={ws?.cwd} className="aj-mono">{ws ? ws.cwd : '—'}</span>
+          <span className="aj-mono" title={ws?.cwd}>{ws ? ws.cwd : <span className="aj-muted">—</span>}</span>
         </div>
       </div>
 
@@ -574,16 +636,15 @@ function JobDetail({ job, agents, workspaces, tz, onEdit, onRun, onCancel, onTog
 
       <div className="aj-runs-block">
         <div className="aj-section-label">
-          Run History
-          <span className="aj-muted" style={{ fontWeight: 400, textTransform: 'none', letterSpacing: 0 }}>
-            {' '}· {job.runs?.length || 0} runs
-          </span>
+          Run History <span className="aj-muted" style={{ fontWeight: 400, textTransform: 'none', letterSpacing: 0 }}>· {job.runs?.length || 0} runs</span>
         </div>
         {(!job.runs || job.runs.length === 0) ? (
-          <div className="aj-muted" style={{ padding: '12px 0', fontSize: 12 }}>No runs yet</div>
+          <div className="aj-muted" style={{ padding: '12px 0', fontSize: 12 }}>No runs yet — click <strong>Run Now</strong> to start</div>
         ) : (
           <div className="aj-runs-list">
-            {job.runs.map((r, i) => <RunItem key={r.id} run={r} defaultOpen={i === 0 && (r.status !== 'idle')} />)}
+            {job.runs.map((r, i) => (
+              <RunItem key={r.id} run={r} jobId={job.id} defaultOpen={i === 0} />
+            ))}
           </div>
         )}
       </div>
@@ -591,7 +652,7 @@ function JobDetail({ job, agents, workspaces, tz, onEdit, onRun, onCancel, onTog
   );
 }
 
-// ─── Workspace Picker (with inline rename) ────────────────────────────────────
+// ─── Workspace picker ─────────────────────────────────────────────────────────
 function WorkspacePicker({ workspaces, value, onChange, onWorkspacesChange }) {
   const [showBrowser, setShowBrowser] = useState(false);
   const [renameId, setRenameId] = useState(null);
@@ -599,30 +660,21 @@ function WorkspacePicker({ workspaces, value, onChange, onWorkspacesChange }) {
   const renameInputRef = useRef(null);
 
   useEffect(() => {
-    if (renameId && renameInputRef.current) {
-      renameInputRef.current.focus();
-      renameInputRef.current.select();
-    }
+    if (renameId && renameInputRef.current) { renameInputRef.current.focus(); renameInputRef.current.select(); }
   }, [renameId]);
 
-  const startRename = (e, ws) => {
-    e.stopPropagation();
-    setRenameId(ws.id);
-    setRenameValue(ws.name);
-  };
+  const startRename = (e, ws) => { e.stopPropagation(); setRenameId(ws.id); setRenameValue(ws.name); };
 
   const commitRename = async () => {
-    const id = renameId;
-    const name = renameValue.trim();
+    const id = renameId, name = renameValue.trim();
     if (!id) return;
     setRenameId(null);
     if (!name || name === workspaces.find(w => w.id === id)?.name) return;
     try {
       const r = await axios.put(`/api/workspaces/${id}`, { name });
       onWorkspacesChange(workspaces.map(w => w.id === id ? r.data.workspace : w));
-      window.UI?.toast?.({ kind: 'ok', title: 'Workspace renamed', body: name });
     } catch (e) {
-      window.UI?.toast?.({ kind: 'err', title: 'Rename failed', body: e.response?.data?.error || e.message });
+      window.UI?.toast?.({ kind: 'err', title: 'Rename failed', body: e.message });
     }
   };
 
@@ -632,118 +684,85 @@ function WorkspacePicker({ workspaces, value, onChange, onWorkspacesChange }) {
     if (existing) { onChange(existing.id); return; }
     try {
       const r = await axios.post('/api/workspaces', { name: wsName, cwd: folderPath });
-      const newWs = r.data.workspace;
-      onWorkspacesChange([...workspaces, newWs]);
-      onChange(newWs.id);
-      window.UI?.toast?.({ kind: 'ok', title: 'Workspace added', body: wsName });
-    } catch (e) {
-      window.UI?.toast?.({ kind: 'err', title: 'Failed to add workspace', body: e.response?.data?.error || e.message });
-    }
+      onWorkspacesChange([...workspaces, r.data.workspace]);
+      onChange(r.data.workspace.id);
+    } catch (e) { window.UI?.toast?.({ kind: 'err', title: 'Failed', body: e.message }); }
   };
 
   const handleDelete = async (e, ws) => {
     e.stopPropagation();
-    const ok = await window.UI.confirm({
-      title: 'Remove Workspace',
-      body: `Remove "${ws.name}" from the workspace list? This does not delete any files.`,
-      confirmLabel: 'Remove',
-      dangerous: true,
-    });
+    const ok = await window.UI.confirm({ title: 'Remove Workspace', body: `Remove "${ws.name}"? Files are unaffected.`, confirmLabel: 'Remove', dangerous: true });
     if (!ok) return;
     try {
       await axios.delete(`/api/workspaces/${ws.id}`);
       onWorkspacesChange(workspaces.filter(w => w.id !== ws.id));
       if (value === ws.id) onChange('');
-      window.UI?.toast?.({ kind: 'ok', title: 'Workspace removed', body: ws.name });
-    } catch (e) {
-      window.UI?.toast?.({ kind: 'err', title: 'Remove failed', body: e.response?.data?.error || e.message });
-    }
+    } catch (e) { window.UI?.toast?.({ kind: 'err', title: 'Remove failed', body: e.message }); }
   };
-
-  const selectedWs = workspaces.find(w => w.id === value);
 
   return (
     <>
-      {showBrowser && (
-        <FolderBrowserModal
-          initialPath={selectedWs?.cwd || '/home'}
-          onConfirm={handleConfirm}
-          onClose={() => setShowBrowser(false)}
-        />
-      )}
-
+      {showBrowser && <FolderBrowserModal initialPath={workspaces.find(w=>w.id===value)?.cwd || '/home'} onConfirm={handleConfirm} onClose={() => setShowBrowser(false)} />}
       <div className="ajwp-list">
-        {workspaces.length === 0 && (
-          <div className="ajwp-empty">No workspaces yet — add one below</div>
-        )}
+        {workspaces.length === 0 && <div className="ajwp-empty">No workspaces — add one below</div>}
         {workspaces.map(w => (
-          <div
-            key={w.id}
-            className={`ajwp-item ${w.id === value ? 'is-selected' : ''}`}
+          <div key={w.id} className={`ajwp-item ${w.id === value ? 'is-selected' : ''}`}
             onClick={() => renameId === w.id ? null : onChange(w.id === value ? '' : w.id)}
-            onDoubleClick={(e) => startRename(e, w)}
-          >
+            onDoubleClick={(e) => startRename(e, w)}>
             <span className="ajwp-icon">📁</span>
             <div className="ajwp-info">
               {renameId === w.id ? (
-                <input
-                  ref={renameInputRef}
-                  className="ajwp-rename-input"
-                  value={renameValue}
+                <input ref={renameInputRef} className="ajwp-rename-input" value={renameValue}
                   onChange={e => setRenameValue(e.target.value)}
-                  onBlur={commitRename}
-                  onClick={e => e.stopPropagation()}
-                  onKeyDown={e => {
-                    if (e.key === 'Enter') { e.preventDefault(); commitRename(); }
-                    if (e.key === 'Escape') { e.preventDefault(); setRenameId(null); }
-                  }}
-                />
-              ) : (
-                <span className="ajwp-name">{w.name}</span>
-              )}
+                  onBlur={commitRename} onClick={e => e.stopPropagation()}
+                  onKeyDown={e => { if (e.key === 'Enter') commitRename(); if (e.key === 'Escape') setRenameId(null); }} />
+              ) : <span className="ajwp-name">{w.name}</span>}
               <span className="ajwp-path" title={w.cwd}>{w.cwd}</span>
             </div>
             {w.id === value && renameId !== w.id && <span className="ajwp-check">✓</span>}
             {renameId !== w.id && (
               <>
-                <button type="button" className="ajwp-edit" onClick={(e) => startRename(e, w)} title="Rename">✎</button>
-                <button type="button" className="ajwp-del" onClick={(e) => handleDelete(e, w)} title="Remove">×</button>
+                <button type="button" className="ajwp-edit" onClick={e => startRename(e, w)}>✎</button>
+                <button type="button" className="ajwp-del" onClick={e => handleDelete(e, w)}>×</button>
               </>
             )}
           </div>
         ))}
       </div>
-
-      <button type="button" className="ajwp-add-btn" onClick={() => setShowBrowser(true)}>
-        + Add Workspace
-      </button>
+      <button type="button" className="ajwp-add-btn" onClick={() => setShowBrowser(true)}>+ Add Workspace</button>
     </>
   );
 }
 
-// ─── Job Form (modal-hosted) ──────────────────────────────────────────────────
-function JobForm({ job, agents, workspaces: initialWorkspaces, activeWsId, tz, onSave, onCancel }) {
+// ─── Job Form ─────────────────────────────────────────────────────────────────
+function JobForm({ job, agents, workspaces: initialWorkspaces, activeWsId, defaultAgentId, tz, onSave, onCancel }) {
   const isEdit = !!job;
-  const [name, setName] = useState(job?.name || '');
-  const [agentId, setAgentId] = useState(job?.agentId || agents[0]?.id || 'claude');
-  const [workspaceId, setWorkspaceId] = useState(job?.workspaceId || activeWsId || '');
-  const [localWorkspaces, setLocalWorkspaces] = useState(initialWorkspaces);
-  const [task, setTask] = useState(job?.task || '');
-  const [schedule, setSchedule] = useState(job?.schedule || '');
+  const [name,       setName]       = useState(job?.name || '');
+  const [agentId,    setAgentId]    = useState(job?.agentId || defaultAgentId || agents[0]?.id || 'claude');
+  const [workspaceId,setWorkspaceId]= useState(job?.workspaceId || activeWsId || '');
+  const [localWs,    setLocalWs]    = useState(initialWorkspaces);
+  const [task,       setTask]       = useState(job?.task || '');
+  const [schedule,   setSchedule]   = useState(job?.schedule || null);
+  const [runAt,      setRunAt]      = useState(job?.runAt || null);
   const [timeoutSec, setTimeoutSec] = useState(job?.timeout || 300);
-  const [enabled, setEnabled] = useState(job?.enabled !== false);
-  const [saving, setSaving] = useState(false);
-  const [error, setError] = useState('');
+  const [enabled,    setEnabled]    = useState(job?.enabled !== false);
+  const [saving,     setSaving]     = useState(false);
+  const [error,      setError]      = useState('');
+  const [tab,        setTab]        = useState('basic');
 
-  // Sync external workspace updates
-  useEffect(() => { setLocalWorkspaces(initialWorkspaces); }, [initialWorkspaces]);
+  useEffect(() => { setLocalWs(initialWorkspaces); }, [initialWorkspaces]);
+
+  const handleScheduleChange = useCallback(({ schedule: s, runAt: r }) => {
+    setSchedule(s);
+    setRunAt(r);
+  }, []);
 
   const handleSubmit = async (e) => {
     e.preventDefault();
     if (!name.trim() || !task.trim()) { setError('Name and Task are required.'); return; }
     setSaving(true); setError('');
     try {
-      await onSave({ name, agentId, workspaceId: workspaceId || null, task, schedule: schedule || null, timeout: parseInt(timeoutSec) || 300, enabled });
+      await onSave({ name, agentId, workspaceId: workspaceId || null, task, schedule: schedule || null, runAt: runAt || null, timeout: parseInt(timeoutSec) || 300, enabled });
     } catch (err) {
       setError(err.response?.data?.error || err.message);
       setSaving(false);
@@ -751,95 +770,105 @@ function JobForm({ job, agents, workspaces: initialWorkspaces, activeWsId, tz, o
   };
 
   const taskPlaceholder = {
-    claude:      'e.g. Review all uncommitted changes and suggest improvements. Run tests and report any failures.',
-    'claude-code': 'e.g. Review all uncommitted changes and suggest improvements. Run tests and report any failures.',
-    shell:       'e.g. git pull && npm install && npm test',
-    gemini:      'e.g. Analyze the codebase for performance bottlenecks and suggest optimizations.',
-    antigravity: 'e.g. Audit error handling across the backend and propose hardening fixes.',
-    codex:       'e.g. Refactor src/utils/*.ts to use async/await instead of callbacks.',
-    opencode:    'e.g. Add unit tests for the auth module.',
-    kilo:        'e.g. Add unit tests for the auth module.',
-    kilocode:    'e.g. Add unit tests for the auth module.',
-    ollama:      'First line (optional) is the model name, then the prompt.\nExample:\n\nllama3.2\nSummarize the changes in the latest git log.',
-    aider:       'e.g. Fix the failing tests in tests/ and commit the changes.',
+    claude: 'e.g. Review uncommitted changes and suggest improvements.',
+    shell:  'e.g. git pull && npm install && npm test',
+    gemini: 'e.g. Analyze the codebase for performance bottlenecks.',
+    antigravity: 'e.g. Audit error handling across the backend.',
+    aider:  'e.g. Fix the failing tests in tests/ and commit the changes.',
   }[agentId] || 'Describe what the agent should do…';
+
+  const TABS = [{ id: 'basic', label: 'Task' }, { id: 'schedule', label: 'Schedule' }, { id: 'advanced', label: 'Settings' }];
 
   return (
     <form className="aj-form" onSubmit={handleSubmit}>
       <div className="aj-form-header">
-        <h2>{isEdit ? 'Edit Job' : 'New Scheduled Job'}</h2>
+        <h2>{isEdit ? 'Edit Job' : 'New Job'}</h2>
         <button type="button" className="aj-form-close" onClick={onCancel}>×</button>
+      </div>
+
+      <div className="aj-form-tabs">
+        {TABS.map(t => (
+          <button key={t.id} type="button"
+            className={`aj-form-tab ${tab === t.id ? 'is-active' : ''}`}
+            onClick={() => setTab(t.id)}>{t.label}</button>
+        ))}
       </div>
 
       {error && <div className="aj-form-error">⚠ {error}</div>}
 
       <div className="aj-form-body">
-        <div className="aj-field">
-          <label className="aj-label">Job Name</label>
-          <input className="aj-input" value={name} onChange={e => setName(e.target.value)} placeholder="e.g. Daily Code Review" required />
-        </div>
-
-        <div className="aj-field-row">
-          <div className="aj-field">
-            <label className="aj-label">Coding Agent</label>
-            <div className="aj-agent-picker">
-              {[{ id: 'shell', label: 'Shell', cmd: 'shell' }, ...agents].map(a => (
-                <button
-                  key={a.id}
-                  type="button"
-                  className={`aj-agent-chip ${agentId === a.id ? 'is-selected' : ''}`}
-                  onClick={() => setAgentId(a.id)}
-                >
-                  <span>{AGENT_GLYPHS[a.id] || '✦'}</span> {a.label}
-                </button>
-              ))}
+        {/* ── Task tab ── */}
+        {tab === 'basic' && (
+          <>
+            <div className="aj-field">
+              <label className="aj-label">Job Name</label>
+              <input className="aj-input" value={name} onChange={e => setName(e.target.value)} placeholder="e.g. Daily Code Review" required />
             </div>
-          </div>
 
+            <div className="aj-field">
+              <label className="aj-label">Agent</label>
+              <div className="aj-agent-picker">
+                {[{ id: 'shell', label: 'Shell', cmd: 'shell' }, ...agents].map(a => (
+                  <button key={a.id} type="button"
+                    className={`aj-agent-chip ${agentId === a.id ? 'is-selected' : ''}`}
+                    onClick={() => setAgentId(a.id)}>
+                    <span>{AGENT_GLYPHS[a.id] || '✦'}</span> {a.label}
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            <div className="aj-field">
+              <label className="aj-label">Workspace</label>
+              <WorkspacePicker workspaces={localWs} value={workspaceId} onChange={setWorkspaceId} onWorkspacesChange={setLocalWs} />
+            </div>
+
+            <div className="aj-field">
+              <label className="aj-label">
+                Task / Prompt
+                <span className="aj-label-hint">Sent to the agent as its starting instruction</span>
+              </label>
+              <textarea className="aj-textarea" value={task} onChange={e => setTask(e.target.value)}
+                placeholder={taskPlaceholder} rows={6} required />
+            </div>
+          </>
+        )}
+
+        {/* ── Schedule tab ── */}
+        {tab === 'schedule' && (
           <div className="aj-field">
-            <label className="aj-label">Workspace</label>
-            <WorkspacePicker
-              workspaces={localWorkspaces}
-              value={workspaceId}
-              onChange={setWorkspaceId}
-              onWorkspacesChange={setLocalWorkspaces}
+            <SchedulePicker
+              schedule={schedule}
+              runAt={runAt}
+              onChange={handleScheduleChange}
+              tz={tz}
             />
           </div>
-        </div>
+        )}
 
-        <div className="aj-field">
-          <label className="aj-label">
-            Task / Prompt
-            <span className="aj-label-hint">This is sent to the agent as its initial instruction</span>
-          </label>
-          <textarea
-            className="aj-textarea"
-            value={task}
-            onChange={e => setTask(e.target.value)}
-            placeholder={taskPlaceholder}
-            rows={6}
-            required
-          />
-        </div>
-
-        <div className="aj-field">
-          <label className="aj-label">Schedule</label>
-          <SchedulePicker value={schedule} onChange={setSchedule} tz={tz} />
-        </div>
-
-        <div className="aj-field-row">
-          <div className="aj-field">
-            <label className="aj-label">Timeout (seconds)</label>
-            <input className="aj-input" type="number" min={30} max={7200} value={timeoutSec} onChange={e => setTimeoutSec(e.target.value)} />
-          </div>
-          <div className="aj-field aj-field--center">
-            <label className="aj-label">Enabled</label>
-            <label className="aj-toggle">
-              <input type="checkbox" checked={enabled} onChange={e => setEnabled(e.target.checked)} />
-              <span className="aj-toggle-track" />
-            </label>
-          </div>
-        </div>
+        {/* ── Settings tab ── */}
+        {tab === 'advanced' && (
+          <>
+            <div className="aj-field">
+              <label className="aj-label">Timeout</label>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                <input className="aj-input" type="number" min={30} max={7200} value={timeoutSec}
+                  onChange={e => setTimeoutSec(e.target.value)} style={{ width: 100 }} />
+                <span className="aj-muted">seconds ({fmtDuration(timeoutSec * 1000)})</span>
+              </div>
+            </div>
+            <div className="aj-field aj-field--inline">
+              <label className="aj-label">Enabled</label>
+              <label className="aj-toggle">
+                <input type="checkbox" checked={enabled} onChange={e => setEnabled(e.target.checked)} />
+                <span className="aj-toggle-track" />
+              </label>
+              <span className="aj-muted" style={{ fontSize: 12 }}>
+                {enabled ? 'Will run on schedule automatically' : 'Disabled — manual run only'}
+              </span>
+            </div>
+          </>
+        )}
       </div>
 
       <div className="aj-form-footer">
@@ -852,12 +881,12 @@ function JobForm({ job, agents, workspaces: initialWorkspaces, activeWsId, tz, o
   );
 }
 
-// ─── Form modal wrapper ───────────────────────────────────────────────────────
+// ─── Modal wrapper ────────────────────────────────────────────────────────────
 function JobFormModal(props) {
   useEffect(() => {
-    const handler = (e) => { if (e.key === 'Escape') props.onCancel(); };
-    document.addEventListener('keydown', handler);
-    return () => document.removeEventListener('keydown', handler);
+    const h = (e) => { if (e.key === 'Escape') props.onCancel(); };
+    document.addEventListener('keydown', h);
+    return () => document.removeEventListener('keydown', h);
   }, [props.onCancel]);
 
   return (
@@ -870,19 +899,31 @@ function JobFormModal(props) {
 }
 
 // ─── Main Panel ───────────────────────────────────────────────────────────────
-export function AgentJobsPanel({ workspaces, agents, activeWsId, onWorkspacesChange }) {
-  const [jobs, setJobs] = useState([]);
-  const [tz, setTz] = useState('');
-  const [loading, setLoading] = useState(true);
+export function AgentJobsPanel({ workspaces, agents, activeWsId, onWorkspacesChange, preset, onClearPreset, onOpenTerminal, onRunningCountChange }) {
+  const [jobs,       setJobs]       = useState([]);
+  const [tz,         setTz]         = useState('');
+  const [loading,    setLoading]    = useState(true);
   const [selectedId, setSelectedId] = useState(null);
-  const [showForm, setShowForm] = useState(false);
-  const [editJob, setEditJob] = useState(null);
-  const [filter, setFilter] = useState('all');
-  const pollRef = useRef(null);
+  const [showForm,   setShowForm]   = useState(false);
+  const [editJob,    setEditJob]    = useState(null);
+  const [formDefaults, setFormDefaults] = useState(null);
+  const [filter,     setFilter]     = useState('all');
+  const pollRef   = useRef(null);
   const mountedRef = useRef(true);
   useEffect(() => () => { mountedRef.current = false; }, []);
 
-  const hasRunning = useMemo(() => jobs.some(j => j.isRunning), [jobs]);
+  const runningCount = useMemo(() => jobs.filter(j => j.isRunning).length, [jobs]);
+  const hasRunning   = runningCount > 0;
+
+  useEffect(() => { onRunningCountChange?.(runningCount); }, [runningCount, onRunningCountChange]);
+
+  useEffect(() => {
+    if (!preset) return;
+    setFormDefaults({ workspaceId: preset.workspaceId, agentId: preset.agentId });
+    setEditJob(null);
+    setShowForm(true);
+    onClearPreset?.();
+  }, [preset]);
 
   const loadJobs = useCallback(async () => {
     try {
@@ -890,8 +931,7 @@ export function AgentJobsPanel({ workspaces, agents, activeWsId, onWorkspacesCha
       if (!mountedRef.current) return;
       setJobs(r.data.jobs || []);
       if (r.data.tz) setTz(r.data.tz);
-    } catch {}
-    finally { if (mountedRef.current) setLoading(false); }
+    } catch {} finally { if (mountedRef.current) setLoading(false); }
   }, []);
 
   const loadSelected = useCallback(async (id) => {
@@ -905,12 +945,12 @@ export function AgentJobsPanel({ workspaces, agents, activeWsId, onWorkspacesCha
 
   useEffect(() => {
     loadJobs();
+    if (selectedId) loadSelected(selectedId);
     const tick = async () => {
       await loadJobs();
-      if (selectedId && hasRunning) await loadSelected(selectedId);
+      if (selectedId) await loadSelected(selectedId);
     };
-    const interval = hasRunning ? 2000 : 8000;
-    pollRef.current = setInterval(tick, interval);
+    pollRef.current = setInterval(tick, hasRunning ? 3000 : 10000);
     return () => clearInterval(pollRef.current);
   }, [loadJobs, loadSelected, selectedId, hasRunning]);
 
@@ -923,27 +963,20 @@ export function AgentJobsPanel({ workspaces, agents, activeWsId, onWorkspacesCha
     const r = await axios.post('/api/agent-jobs', data);
     await loadJobs();
     setSelectedId(r.data.job.id);
-    setShowForm(false);
-    setEditJob(null);
+    setShowForm(false); setEditJob(null);
     window.UI?.toast?.({ kind: 'ok', title: 'Job created', body: r.data.job.name });
   };
 
   const handleUpdate = async (id, data) => {
-    const r = await axios.put(`/api/agent-jobs/${id}`, data);
+    await axios.put(`/api/agent-jobs/${id}`, data);
     await loadJobs();
-    setShowForm(false);
-    setEditJob(null);
-    window.UI?.toast?.({ kind: 'ok', title: 'Job updated', body: r.data.job.name });
+    setShowForm(false); setEditJob(null);
+    window.UI?.toast?.({ kind: 'ok', title: 'Job updated' });
   };
 
   const handleDelete = async (id) => {
     const job = jobs.find(j => j.id === id);
-    const ok = await window.UI.confirm({
-      title: 'Delete Job',
-      body: `Delete "${job?.name}"? This also removes all run history.`,
-      confirmLabel: 'Delete',
-      dangerous: true,
-    });
+    const ok = await window.UI.confirm({ title: 'Delete Job', body: `Delete "${job?.name}"? This removes all run history.`, confirmLabel: 'Delete', dangerous: true });
     if (!ok) return;
     await axios.delete(`/api/agent-jobs/${id}`);
     await loadJobs();
@@ -955,8 +988,8 @@ export function AgentJobsPanel({ workspaces, agents, activeWsId, onWorkspacesCha
     try {
       await axios.post(`/api/agent-jobs/${id}/run`);
       window.UI?.toast?.({ kind: 'ok', title: 'Job started' });
-      await loadJobs();
       await loadSelected(id);
+      await loadJobs();
     } catch (e) {
       window.UI?.toast?.({ kind: 'err', title: 'Run failed', body: e.response?.data?.error || e.message });
     }
@@ -965,10 +998,10 @@ export function AgentJobsPanel({ workspaces, agents, activeWsId, onWorkspacesCha
   const handleCancel = async (id) => {
     try {
       await axios.post(`/api/agent-jobs/${id}/cancel`);
-      window.UI?.toast?.({ kind: 'ok', title: 'Job cancelled' });
+      window.UI?.toast?.({ kind: 'ok', title: 'Cancelled' });
       await loadJobs();
     } catch (e) {
-      window.UI?.toast?.({ kind: 'err', title: 'Cancel failed', body: e.response?.data?.error || e.message });
+      window.UI?.toast?.({ kind: 'err', title: 'Cancel failed', body: e.message });
     }
   };
 
@@ -982,9 +1015,9 @@ export function AgentJobsPanel({ workspaces, agents, activeWsId, onWorkspacesCha
       const r = await axios.post(`/api/agent-jobs/${id}/clone`);
       await loadJobs();
       setSelectedId(r.data.job.id);
-      window.UI?.toast?.({ kind: 'ok', title: 'Job duplicated', body: r.data.job.name });
+      window.UI?.toast?.({ kind: 'ok', title: 'Duplicated', body: r.data.job.name });
     } catch (e) {
-      window.UI?.toast?.({ kind: 'err', title: 'Clone failed', body: e.response?.data?.error || e.message });
+      window.UI?.toast?.({ kind: 'err', title: 'Clone failed', body: e.message });
     }
   };
 
@@ -1007,486 +1040,22 @@ export function AgentJobsPanel({ workspaces, agents, activeWsId, onWorkspacesCha
     total: jobs.length,
     running: jobs.filter(j => j.isRunning).length,
     failed: jobs.filter(j => j.status === 'failed').length,
-    scheduled: jobs.filter(j => j.schedule && j.enabled).length,
+    scheduled: jobs.filter(j => (j.schedule || j.runAt) && j.enabled).length,
   }), [jobs]);
 
   return (
     <>
-      <style>{`
-        .aj-root {
-          display: flex; height: 100%; min-height: 0;
-          background: #08080c; color: #e5e7eb;
-          font-family: var(--font-sans, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif);
-          font-size: 13px;
-        }
-
-        /* ── Left List Pane ── */
-        .aj-list-pane {
-          width: 300px; min-width: 300px;
-          display: flex; flex-direction: column;
-          border-right: 1px solid rgba(255,255,255,0.06);
-          background: #0b0b13; overflow: hidden;
-        }
-        .aj-list-header {
-          padding: 14px 14px 10px;
-          border-bottom: 1px solid rgba(255,255,255,0.05);
-          flex-shrink: 0;
-        }
-        .aj-list-toprow {
-          display: flex; align-items: center; justify-content: space-between;
-          margin-bottom: 10px;
-        }
-        .aj-list-title { font-size: 13px; font-weight: 700; color: #f3f4f6; }
-        .aj-tz-tag {
-          font-size: 10px; color: #6b7280; font-family: ui-monospace, monospace;
-          margin-left: 6px;
-        }
-
-        .aj-new-btn {
-          background: linear-gradient(135deg, #a78bfa, #7c3aed);
-          color: #fff; border: 0;
-          padding: 6px 12px; border-radius: 6px;
-          font-size: 12px; font-weight: 600;
-          cursor: pointer; transition: filter 0.15s; white-space: nowrap;
-        }
-        .aj-new-btn:hover { filter: brightness(1.12); }
-
-        .aj-stats { display: flex; gap: 8px; margin-bottom: 10px; }
-        .aj-stat {
-          flex: 1; background: rgba(255,255,255,0.03);
-          border: 1px solid rgba(255,255,255,0.06);
-          border-radius: 6px; padding: 6px 8px; text-align: center;
-        }
-        .aj-stat-value { display: block; font-size: 16px; font-weight: 700; color: #f3f4f6; line-height: 1.2; }
-        .aj-stat-label { display: block; font-size: 9px; color: #6b7280; text-transform: uppercase; letter-spacing: 0.06em; }
-        .aj-stat.is-running .aj-stat-value { color: #60a5fa; }
-        .aj-stat.is-failed .aj-stat-value  { color: #f87171; }
-
-        .aj-filters { display: flex; gap: 4px; flex-wrap: wrap; }
-        .aj-filter-btn {
-          background: none; border: 1px solid rgba(255,255,255,0.07);
-          color: #6b7280; padding: 3px 8px;
-          border-radius: 4px; font-size: 11px;
-          cursor: pointer; transition: all 0.15s;
-        }
-        .aj-filter-btn:hover { color: #d1d5db; border-color: rgba(255,255,255,0.14); }
-        .aj-filter-btn.is-active { background: rgba(167,139,250,0.15); color: #c4b5fd; border-color: rgba(167,139,250,0.35); }
-
-        .aj-jobs-scroll { flex: 1; overflow-y: auto; padding: 6px 8px; }
-        .aj-empty-list { text-align: center; color: #4b5563; padding: 40px 16px; font-size: 12px; line-height: 1.8; }
-
-        .aj-job-card {
-          display: flex; flex-direction: column; gap: 6px;
-          width: 100%; background: none;
-          border: 1px solid rgba(255,255,255,0.05);
-          border-radius: 7px; padding: 10px 11px;
-          margin-bottom: 5px; cursor: pointer;
-          text-align: left; color: inherit;
-          transition: background 0.15s, border-color 0.15s;
-        }
-        .aj-job-card:hover { background: rgba(255,255,255,0.03); border-color: rgba(255,255,255,0.09); }
-        .aj-job-card.is-selected { background: rgba(167,139,250,0.07); border-color: rgba(167,139,250,0.3); }
-        .aj-job-card.is-disabled { opacity: 0.5; }
-        .aj-jc-top { display: flex; align-items: center; gap: 9px; }
-        .aj-jc-glyph { font-size: 18px; flex-shrink: 0; }
-        .aj-jc-info { flex: 1; min-width: 0; }
-        .aj-jc-name { display: block; font-size: 12px; font-weight: 600; color: #e5e7eb; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-        .aj-jc-meta { display: block; font-size: 10px; color: #6b7280; margin-top: 1px; }
-        .aj-jc-bottom { display: flex; justify-content: space-between; align-items: center; font-size: 10px; }
-
-        /* ── Right pane ── */
-        .aj-right-pane { flex: 1; min-width: 0; overflow-y: auto; display: flex; flex-direction: column; }
-        .aj-detail-empty {
-          flex: 1; display: flex; flex-direction: column;
-          align-items: center; justify-content: center;
-          color: #4b5563; text-align: center; padding: 40px; gap: 12px;
-        }
-        .aj-detail-empty-orb {
-          width: 64px; height: 64px; border-radius: 50%;
-          background: rgba(167,139,250,0.05);
-          border: 1px solid rgba(167,139,250,0.12);
-          display: flex; align-items: center; justify-content: center; font-size: 28px;
-        }
-
-        .aj-detail {
-          flex: 1; padding: 20px 24px;
-          display: flex; flex-direction: column; gap: 18px;
-          min-height: 0; overflow-y: auto;
-        }
-        .aj-detail-header {
-          display: flex; align-items: flex-start; gap: 14px;
-          padding-bottom: 16px;
-          border-bottom: 1px solid rgba(255,255,255,0.06);
-        }
-        .aj-detail-glyph { font-size: 28px; flex-shrink: 0; margin-top: 2px; }
-        .aj-detail-title-block { flex: 1; min-width: 0; }
-        .aj-detail-name { margin: 0 0 4px; font-size: 18px; font-weight: 700; color: #f3f4f6; }
-        .aj-detail-sub { font-size: 12px; color: #6b7280; }
-
-        .aj-detail-controls { display: flex; gap: 8px; flex-wrap: wrap; }
-
-        .aj-info-grid {
-          display: flex; flex-direction: column; gap: 4px;
-          background: rgba(255,255,255,0.02);
-          border: 1px solid rgba(255,255,255,0.05);
-          border-radius: 7px; padding: 10px 14px;
-        }
-        .aj-info-row { display: flex; align-items: center; gap: 12px; padding: 4px 0; }
-        .aj-info-label { font-size: 11px; color: #6b7280; width: 80px; flex-shrink: 0; font-weight: 500; }
-        .aj-info-aside { font-size: 11px; }
-
-        .aj-task-block { display: flex; flex-direction: column; gap: 6px; }
-        .aj-task-pre {
-          background: #0a0a12;
-          border: 1px solid rgba(255,255,255,0.06);
-          border-radius: 6px; padding: 12px;
-          font-family: ui-monospace, monospace; font-size: 12px;
-          color: #d1d5db; white-space: pre-wrap; word-break: break-word;
-          margin: 0; max-height: 140px; overflow-y: auto;
-        }
-
-        .aj-runs-block { display: flex; flex-direction: column; gap: 8px; }
-        .aj-runs-list { display: flex; flex-direction: column; gap: 4px; }
-        .aj-run-item { border: 1px solid rgba(255,255,255,0.05); border-radius: 6px; overflow: hidden; }
-        .aj-run-summary {
-          display: flex; align-items: center; gap: 10px;
-          width: 100%; background: rgba(255,255,255,0.02);
-          border: 0; color: #d1d5db; padding: 8px 12px;
-          cursor: pointer; text-align: left;
-          font-size: 12px; transition: background 0.1s;
-        }
-        .aj-run-summary:hover { background: rgba(255,255,255,0.05); }
-        .aj-run-time { flex: 1; font-size: 11px; color: #9ca3af; }
-        .aj-run-dur { font-family: ui-monospace, monospace; font-size: 11px; color: #6b7280; }
-        .aj-run-chevron { color: #4b5563; font-size: 12px; }
-        .aj-run-output { border-top: 1px solid rgba(255,255,255,0.05); background: #080810; }
-        .aj-output-pre {
-          margin: 0; padding: 12px;
-          font-family: ui-monospace, monospace; font-size: 11.5px;
-          color: #d1d5db; white-space: pre-wrap; word-break: break-word;
-          max-height: 400px; overflow-y: auto; line-height: 1.55;
-        }
-        .aj-run-no-output { display: block; padding: 12px; font-size: 12px; }
-
-        /* ── Form ── */
-        .aj-form { display: flex; flex-direction: column; background: #0c0c18; overflow: hidden; max-height: 100%; }
-        .aj-form-header {
-          display: flex; align-items: center; justify-content: space-between;
-          padding: 16px 20px 14px;
-          border-bottom: 1px solid rgba(255,255,255,0.06);
-          flex-shrink: 0;
-        }
-        .aj-form-header h2 { margin: 0; font-size: 16px; font-weight: 700; color: #f3f4f6; }
-        .aj-form-close {
-          background: none; border: 0; color: #6b7280; font-size: 22px; line-height: 1;
-          cursor: pointer; padding: 0 4px; border-radius: 4px; transition: all 0.15s;
-        }
-        .aj-form-close:hover { color: #f3f4f6; background: rgba(255,255,255,0.08); }
-        .aj-form-error { background: rgba(248,113,113,0.1); border-left: 3px solid #f87171; color: #fca5a5; padding: 10px 16px; font-size: 12px; flex-shrink: 0; }
-        .aj-form-body { flex: 1; overflow-y: auto; padding: 16px 20px; display: flex; flex-direction: column; gap: 16px; }
-        .aj-form-footer {
-          display: flex; justify-content: flex-end; gap: 8px;
-          padding: 12px 20px;
-          border-top: 1px solid rgba(255,255,255,0.06);
-          flex-shrink: 0;
-        }
-
-        .aj-field { display: flex; flex-direction: column; gap: 6px; flex: 1; }
-        .aj-field-row { display: flex; gap: 14px; }
-        .aj-field--center { justify-content: flex-start; }
-        .aj-label {
-          font-size: 11px; font-weight: 600; text-transform: uppercase;
-          letter-spacing: 0.07em; color: #9ca3af;
-          display: flex; align-items: baseline; gap: 8px;
-        }
-        .aj-label-hint { font-size: 10px; color: #4b5563; text-transform: none; letter-spacing: 0; font-weight: 400; }
-
-        .aj-input, .aj-select, .aj-textarea {
-          background: #08080f; border: 1px solid rgba(255,255,255,0.09);
-          color: #f3f4f6; padding: 8px 10px;
-          border-radius: 6px; font-size: 13px; outline: none;
-          transition: border-color 0.15s; width: 100%; box-sizing: border-box;
-        }
-        .aj-input:focus, .aj-select:focus, .aj-textarea:focus { border-color: rgba(167,139,250,0.55); }
-        .aj-textarea { resize: vertical; font-family: ui-monospace, monospace; font-size: 12px; line-height: 1.55; }
-        .aj-select { cursor: pointer; appearance: none; background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 12 12'%3E%3Cpath fill='%236b7280' d='M6 8L1 3h10z'/%3E%3C/svg%3E"); background-repeat: no-repeat; background-position: right 10px center; padding-right: 28px; }
-
-        /* ── Form modal overlay ── */
-        .aj-modal-overlay {
-          position: fixed; inset: 0;
-          background: rgba(0,0,0,0.65);
-          display: flex; align-items: center; justify-content: center;
-          z-index: 1000; backdrop-filter: blur(3px);
-          animation: ajFadeIn 0.15s ease-out;
-          padding: 24px;
-        }
-        @keyframes ajFadeIn { from { opacity: 0; } to { opacity: 1; } }
-        .aj-modal-dialog {
-          background: #0c0c18;
-          border: 1px solid rgba(167,139,250,0.2);
-          border-radius: 10px;
-          width: 720px;
-          max-width: 100%;
-          max-height: calc(100vh - 48px);
-          display: flex; flex-direction: column;
-          overflow: hidden;
-          box-shadow: 0 20px 60px rgba(0,0,0,0.6), 0 0 0 1px rgba(255,255,255,0.04);
-          animation: ajSlideIn 0.2s cubic-bezier(0.34,1.56,0.64,1);
-        }
-        @keyframes ajSlideIn { from { opacity: 0; transform: scale(0.96) translateY(8px); } to { opacity: 1; transform: scale(1) translateY(0); } }
-
-        /* ── WorkspacePicker ── */
-        .ajwp-list { display: flex; flex-direction: column; gap: 3px; max-height: 180px; overflow-y: auto; }
-        .ajwp-empty { font-size: 11px; color: #4b5563; text-align: center; padding: 10px 0; }
-        .ajwp-item {
-          display: flex; align-items: center; gap: 8px;
-          padding: 7px 9px; border-radius: 6px;
-          cursor: pointer; border: 1px solid transparent;
-          transition: background 0.15s, border-color 0.15s;
-        }
-        .ajwp-item:hover { background: rgba(255,255,255,0.04); }
-        .ajwp-item.is-selected { background: rgba(167,139,250,0.08); border-color: rgba(167,139,250,0.25); }
-        .ajwp-icon { font-size: 14px; flex-shrink: 0; opacity: 0.75; }
-        .ajwp-info { flex: 1; min-width: 0; }
-        .ajwp-name { display: block; font-size: 12px; font-weight: 600; color: #e5e7eb; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-        .ajwp-item.is-selected .ajwp-name { color: #c4b5fd; }
-        .ajwp-path { display: block; font-size: 10px; color: #6b7280; font-family: ui-monospace, monospace; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-        .ajwp-rename-input {
-          background: #08080f; border: 1px solid rgba(167,139,250,0.4);
-          color: #f3f4f6; padding: 2px 6px; border-radius: 4px;
-          font-size: 12px; font-weight: 600; outline: none; width: 100%;
-          box-sizing: border-box;
-        }
-        .ajwp-rename-input:focus { border-color: rgba(167,139,250,0.7); }
-        .ajwp-check { font-size: 12px; color: #a78bfa; flex-shrink: 0; }
-        .ajwp-edit, .ajwp-del {
-          background: none; border: 0; color: #4b5563;
-          line-height: 1; padding: 2px 4px;
-          cursor: pointer; border-radius: 4px;
-          opacity: 0; transition: opacity 0.15s, color 0.15s; flex-shrink: 0;
-        }
-        .ajwp-edit { font-size: 12px; }
-        .ajwp-del  { font-size: 16px; }
-        .ajwp-item:hover .ajwp-edit, .ajwp-item:hover .ajwp-del,
-        .ajwp-item.is-selected .ajwp-edit, .ajwp-item.is-selected .ajwp-del { opacity: 1; }
-        .ajwp-edit:hover { color: #a78bfa; background: rgba(167,139,250,0.1); }
-        .ajwp-del:hover  { color: #ef4444; background: rgba(239,68,68,0.1); }
-        .ajwp-add-btn {
-          width: 100%;
-          background: rgba(167,139,250,0.07);
-          border: 1px dashed rgba(167,139,250,0.3);
-          color: #a78bfa; padding: 7px;
-          border-radius: 6px; font-size: 12px;
-          cursor: pointer; transition: all 0.2s;
-          text-align: center; margin-top: 4px;
-        }
-        .ajwp-add-btn:hover { background: rgba(167,139,250,0.13); border-style: solid; }
-
-        .aj-agent-picker { display: flex; flex-wrap: wrap; gap: 6px; }
-        .aj-agent-chip {
-          display: flex; align-items: center; gap: 5px;
-          background: #111120; border: 1px solid rgba(255,255,255,0.07); color: #9ca3af;
-          padding: 5px 10px; border-radius: 6px;
-          font-size: 12px; cursor: pointer; transition: all 0.15s;
-        }
-        .aj-agent-chip:hover { border-color: rgba(255,255,255,0.15); color: #d1d5db; }
-        .aj-agent-chip.is-selected { background: rgba(167,139,250,0.1); border-color: rgba(167,139,250,0.4); color: #c4b5fd; }
-
-        /* ── Schedule Picker (new design) ── */
-        .sp-root {
-          background: #0a0a14;
-          border: 1px solid rgba(255,255,255,0.08);
-          border-radius: 8px; overflow: hidden;
-        }
-        .sp-mode-tabs {
-          display: flex;
-          background: rgba(255,255,255,0.03);
-          border-bottom: 1px solid rgba(255,255,255,0.06);
-        }
-        .sp-mode-tab {
-          flex: 0 0 auto;
-          background: none; border: 0;
-          color: #6b7280; padding: 9px 18px;
-          font-size: 12px; font-weight: 600;
-          cursor: pointer; transition: all 0.15s;
-          border-bottom: 2px solid transparent;
-        }
-        .sp-mode-tab:hover { color: #d1d5db; }
-        .sp-mode-tab.is-active { color: #c4b5fd; border-bottom-color: #a78bfa; background: rgba(167,139,250,0.06); }
-
-        .sp-body { padding: 14px 16px; display: flex; flex-direction: column; gap: 12px; }
-        .sp-row { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
-        .sp-row--days { align-items: flex-start; }
-        .sp-row--kind .sp-radio { flex-shrink: 0; }
-
-        .sp-label {
-          font-size: 11px; font-weight: 600;
-          color: #9ca3af; min-width: 100px; flex-shrink: 0;
-          text-transform: uppercase; letter-spacing: 0.05em;
-        }
-        .sp-hint { font-size: 11px; color: #6b7280; }
-        .sp-tz   { font-size: 11px; color: #a78bfa; font-family: ui-monospace, monospace; }
-
-        .sp-radio {
-          display: inline-flex; align-items: center; gap: 6px;
-          background: rgba(255,255,255,0.03);
-          border: 1px solid rgba(255,255,255,0.08);
-          padding: 6px 12px; border-radius: 6px;
-          cursor: pointer; font-size: 12px;
-          color: #9ca3af; transition: all 0.15s;
-        }
-        .sp-radio input { accent-color: #a78bfa; }
-        .sp-radio:hover { border-color: rgba(255,255,255,0.15); color: #d1d5db; }
-        .sp-radio.is-on { background: rgba(167,139,250,0.1); border-color: rgba(167,139,250,0.4); color: #c4b5fd; }
-
-        .sp-num, .sp-sel, .sp-time {
-          background: #08080f;
-          border: 1px solid rgba(255,255,255,0.09);
-          color: #f3f4f6; padding: 6px 10px;
-          border-radius: 5px; font-size: 13px; outline: none;
-          transition: border-color 0.15s;
-        }
-        .sp-num { width: 60px; text-align: center; }
-        .sp-sel { cursor: pointer; min-width: 110px; appearance: none; background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='10' viewBox='0 0 12 12'%3E%3Cpath fill='%236b7280' d='M6 8L1 3h10z'/%3E%3C/svg%3E"); background-repeat: no-repeat; background-position: right 8px center; padding-right: 24px; }
-        .sp-time { width: 110px; font-family: ui-monospace, monospace; color-scheme: dark; }
-        .sp-num:focus, .sp-sel:focus, .sp-time:focus { border-color: rgba(167,139,250,0.5); }
-
-        .sp-day-pills { display: flex; gap: 5px; flex-wrap: wrap; }
-        .sp-day-btn {
-          width: 38px; height: 32px;
-          border-radius: 6px;
-          background: rgba(255,255,255,0.04);
-          border: 1px solid rgba(255,255,255,0.08);
-          color: #6b7280;
-          font-size: 11px; font-weight: 600;
-          cursor: pointer; transition: all 0.15s;
-        }
-        .sp-day-btn:hover { border-color: rgba(167,139,250,0.3); color: #c4b5fd; }
-        .sp-day-btn.is-on { background: rgba(167,139,250,0.15); border-color: rgba(167,139,250,0.5); color: #c4b5fd; }
-
-        .sp-day-presets {
-          display: flex; gap: 10px;
-          width: 100%;
-          padding-left: 110px;
-          margin-top: 4px;
-        }
-        .sp-preset-link {
-          background: none; border: 0; color: #6b7280;
-          font-size: 11px; cursor: pointer; padding: 0;
-          text-decoration: underline; text-underline-offset: 2px;
-          transition: color 0.15s;
-        }
-        .sp-preset-link:hover { color: #a78bfa; }
-
-        .sp-cron-input {
-          flex: 1;
-          background: #08080f;
-          border: 1px solid rgba(255,255,255,0.1);
-          color: #e5e7eb; padding: 7px 11px;
-          border-radius: 5px;
-          font-family: ui-monospace, monospace; font-size: 13px;
-          outline: none; transition: border-color 0.15s;
-          min-width: 220px;
-        }
-        .sp-cron-input:focus { border-color: rgba(167,139,250,0.5); }
-        .sp-cron-input::placeholder { color: #374151; }
-
-        .sp-advanced-help {
-          padding-left: 110px;
-          display: flex; flex-direction: column; gap: 4px;
-          font-size: 11px;
-        }
-        .sp-err { color: #f87171; }
-
-        .sp-footer {
-          display: flex; align-items: center; justify-content: space-between; gap: 10px;
-          padding: 10px 16px;
-          border-top: 1px solid rgba(255,255,255,0.05);
-          background: rgba(255,255,255,0.015);
-          flex-wrap: wrap;
-        }
-        .sp-next { font-size: 12px; color: #d1d5db; }
-        .sp-next strong { color: #c4b5fd; font-weight: 600; }
-        .sp-muted { color: #6b7280; }
-        .sp-cron-pill {
-          font-family: ui-monospace, monospace; font-size: 11px;
-          color: #a78bfa;
-          background: rgba(167,139,250,0.1);
-          border: 1px solid rgba(167,139,250,0.2);
-          padding: 3px 9px; border-radius: 4px;
-          white-space: nowrap; flex-shrink: 0;
-        }
-
-        /* Toggle */
-        .aj-toggle { display: flex; align-items: center; cursor: pointer; }
-        .aj-toggle input { display: none; }
-        .aj-toggle-track {
-          width: 36px; height: 20px; border-radius: 10px;
-          background: rgba(255,255,255,0.1); border: 1px solid rgba(255,255,255,0.1);
-          position: relative; transition: all 0.2s;
-        }
-        .aj-toggle-track::after {
-          content: ''; position: absolute; top: 2px; left: 2px;
-          width: 14px; height: 14px; border-radius: 7px;
-          background: #6b7280; transition: all 0.2s;
-        }
-        .aj-toggle input:checked + .aj-toggle-track { background: rgba(167,139,250,0.3); border-color: #a78bfa; }
-        .aj-toggle input:checked + .aj-toggle-track::after { left: 18px; background: #a78bfa; }
-
-        /* Badges & buttons */
-        .aj-badge {
-          display: inline-flex; align-items: center; gap: 5px;
-          padding: 2px 7px; border-radius: 10px; font-size: 11px; font-weight: 600; white-space: nowrap;
-        }
-        .aj-badge--sm { padding: 2px 6px; font-size: 10px; }
-        .aj-dot { width: 6px; height: 6px; border-radius: 50%; flex-shrink: 0; }
-        .aj-dot--pulse { animation: aj-pulse 1.5s ease-in-out infinite; }
-        @keyframes aj-pulse { 0%, 100% { opacity: 1; transform: scale(1); } 50% { opacity: 0.5; transform: scale(0.75); } }
-
-        .aj-btn {
-          display: inline-flex; align-items: center; gap: 5px;
-          padding: 6px 13px; border-radius: 6px;
-          font-size: 12px; font-weight: 500;
-          cursor: pointer; border: 1px solid transparent;
-          transition: all 0.15s; white-space: nowrap;
-        }
-        .aj-btn--primary { background: #7c3aed; color: #fff; }
-        .aj-btn--primary:hover { filter: brightness(1.12); }
-        .aj-btn--primary:disabled { background: #1f1f30; color: #4b5563; cursor: not-allowed; }
-        .aj-btn--ghost { background: none; border-color: rgba(255,255,255,0.1); color: #d1d5db; }
-        .aj-btn--ghost:hover { background: rgba(255,255,255,0.05); border-color: rgba(255,255,255,0.18); }
-        .aj-btn--danger { background: rgba(239,68,68,0.1); border-color: rgba(239,68,68,0.3); color: #f87171; }
-        .aj-btn--danger:hover { background: rgba(239,68,68,0.18); }
-        .aj-btn--red { color: #f87171; }
-        .aj-btn--red:hover { color: #fca5a5; border-color: rgba(248,113,113,0.3); }
-        .aj-btn--accent-outline { border-color: rgba(167,139,250,0.4); color: #a78bfa; }
-
-        .aj-section-label { font-size: 10px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.08em; color: #a78bfa; }
-        .aj-muted { color: #6b7280; font-size: 11px; }
-        .aj-mono  { font-family: ui-monospace, monospace; }
-        .aj-schedule-tag {
-          background: rgba(255,255,255,0.05); border: 1px solid rgba(255,255,255,0.07);
-          padding: 1px 6px; border-radius: 4px; font-size: 10px; color: #9ca3af;
-        }
-
-        /* Scrollbars */
-        .aj-jobs-scroll::-webkit-scrollbar, .aj-detail::-webkit-scrollbar,
-        .aj-form-body::-webkit-scrollbar, .aj-right-pane::-webkit-scrollbar { width: 5px; }
-        .aj-jobs-scroll::-webkit-scrollbar-thumb, .aj-detail::-webkit-scrollbar-thumb,
-        .aj-form-body::-webkit-scrollbar-thumb, .aj-right-pane::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.07); border-radius: 3px; }
-      `}</style>
-
       <div className="aj-root">
-        {/* Left list */}
+        {/* Left: job list */}
         <div className="aj-list-pane">
           <div className="aj-list-header">
             <div className="aj-list-toprow">
               <span className="aj-list-title">
-                Scheduled Jobs
-                {tz && <span className="aj-tz-tag" title="Server timezone">· {tz}</span>}
+                Jobs
+                {tz && <span className="aj-tz-tag">· {tz}</span>}
               </span>
-              <button className="aj-new-btn" onClick={() => { setEditJob(null); setShowForm(true); }}>
-                + New Job
+              <button className="aj-new-btn" onClick={() => { setEditJob(null); setFormDefaults(null); setShowForm(true); }}>
+                + New
               </button>
             </div>
 
@@ -1499,11 +1068,7 @@ export function AgentJobsPanel({ workspaces, agents, activeWsId, onWorkspacesCha
 
             <div className="aj-filters">
               {FILTERS.map(f => (
-                <button
-                  key={f.id}
-                  className={`aj-filter-btn ${filter === f.id ? 'is-active' : ''}`}
-                  onClick={() => setFilter(f.id)}
-                >
+                <button key={f.id} className={`aj-filter-btn ${filter === f.id ? 'is-active' : ''}`} onClick={() => setFilter(f.id)}>
                   {f.label}
                 </button>
               ))}
@@ -1515,26 +1080,18 @@ export function AgentJobsPanel({ workspaces, agents, activeWsId, onWorkspacesCha
               <div className="aj-empty-list">Loading…</div>
             ) : filteredJobs.length === 0 ? (
               <div className="aj-empty-list">
-                {jobs.length === 0 ? (
-                  <>No jobs yet.<br />Click <strong>+ New Job</strong> to get started.</>
-                ) : `No ${filter} jobs.`}
+                {jobs.length === 0 ? <>No jobs yet.<br />Click <strong>+ New</strong> to create one.</> : `No ${filter} jobs.`}
               </div>
             ) : (
               filteredJobs.map(job => (
-                <JobCard
-                  key={job.id}
-                  job={job}
-                  agents={agents}
-                  workspaces={workspaces}
-                  isSelected={selectedId === job.id}
-                  onClick={() => handleSelect(job.id)}
-                />
+                <JobCard key={job.id} job={job} agents={agents} workspaces={workspaces}
+                  isSelected={selectedId === job.id} onClick={() => handleSelect(job.id)} />
               ))
             )}
           </div>
         </div>
 
-        {/* Right detail (form is now a modal) */}
+        {/* Right: detail */}
         <div className="aj-right-pane">
           {selectedJob ? (
             <JobDetail
@@ -1548,15 +1105,16 @@ export function AgentJobsPanel({ workspaces, agents, activeWsId, onWorkspacesCha
               onToggle={(enabled) => handleToggle(selectedJob.id, enabled)}
               onDelete={() => handleDelete(selectedJob.id)}
               onClone={() => handleClone(selectedJob.id)}
+              onOpenTerminal={onOpenTerminal}
             />
           ) : (
             <div className="aj-detail-empty">
               <div className="aj-detail-empty-orb">📋</div>
               <div>
-                <strong style={{ color: '#9ca3af', fontSize: 14 }}>Select a job to view details</strong><br />
-                <span style={{ fontSize: 12 }}>or create a new scheduled job</span>
+                <strong style={{ color: 'var(--text-2)', fontSize: 14 }}>Select a job to view details</strong><br />
+                <span style={{ fontSize: 12 }}>or create a new job</span>
               </div>
-              <button className="aj-btn aj-btn--primary" onClick={() => { setEditJob(null); setShowForm(true); }}>
+              <button className="aj-btn aj-btn--primary" onClick={() => { setEditJob(null); setFormDefaults(null); setShowForm(true); }}>
                 + New Job
               </button>
             </div>
@@ -1569,10 +1127,11 @@ export function AgentJobsPanel({ workspaces, agents, activeWsId, onWorkspacesCha
           job={editJob}
           agents={agents}
           workspaces={workspaces}
-          activeWsId={activeWsId}
+          activeWsId={formDefaults?.workspaceId || activeWsId}
+          defaultAgentId={formDefaults?.agentId}
           tz={tz}
           onSave={editJob ? (data) => handleUpdate(editJob.id, data) : handleCreate}
-          onCancel={() => { setShowForm(false); setEditJob(null); }}
+          onCancel={() => { setShowForm(false); setEditJob(null); setFormDefaults(null); }}
         />
       )}
     </>
@@ -1582,7 +1141,7 @@ export function AgentJobsPanel({ workspaces, agents, activeWsId, onWorkspacesCha
 // ─── Standalone tab wrapper ───────────────────────────────────────────────────
 export function AgentJobsTab() {
   const [workspaces, setWorkspaces] = useState([]);
-  const [agents, setAgents]         = useState([]);
+  const [agents,     setAgents]     = useState([]);
   const mountedRef = useRef(true);
   useEffect(() => () => { mountedRef.current = false; }, []);
 

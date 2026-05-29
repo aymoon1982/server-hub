@@ -10,17 +10,17 @@ function UsageGauge({ percent, status, label }) {
     <div style={{ textAlign: 'center' }}>
       <div style={{ position: 'relative', width: 120, height: 120, margin: '0 auto' }}>
         <svg viewBox="0 0 100 100" style={{ transform: 'rotate(-90deg)' }}>
-          <circle cx="50" cy="50" r="40" fill="none" stroke="rgba(255,255,255,0.05)" strokeWidth="10" />
+          <circle cx="50" cy="50" r="40" fill="none" stroke="var(--line)" strokeWidth="10" />
           <circle cx="50" cy="50" r="40" fill="none" stroke={color} strokeWidth="10" 
             strokeLinecap="round" strokeDasharray={GAUGE_CIRCUMFERENCE} strokeDashoffset={offset}
             style={{ transition: 'stroke-dashoffset 1s ease' }} />
         </svg>
         <div style={{ position: 'absolute', top: '50%', left: '50%', transform: 'translate(-50%, -50%)', textAlign: 'center' }}>
           <div style={{ fontSize: '1.5rem', fontWeight: 700 }}>{percent}%</div>
-          <div style={{ fontSize: '0.65rem', color: '#64748b' }}>quota</div>
+          <div style={{ fontSize: '0.65rem', color: 'var(--text-3)' }}>quota</div>
         </div>
       </div>
-      <div style={{ marginTop: 8, fontSize: '0.8rem', color: '#94a3b8' }}>{label}</div>
+      <div style={{ marginTop: 8, fontSize: '0.8rem', color: 'var(--text-2)' }}>{label}</div>
     </div>
   );
 }
@@ -91,7 +91,7 @@ export function CLIUsageTab() {
   
   if (loading) {
     return (
-      <div style={{ padding: 24, textAlign: 'center', color: '#64748b' }}>
+      <div style={{ padding: 24, textAlign: 'center', color: 'var(--text-3)' }}>
         Loading usage data...
       </div>
     );
@@ -112,14 +112,14 @@ export function CLIUsageTab() {
     <div style={{ padding: 24 }}>
       <div style={{ marginBottom: 24 }}>
         <h2 style={{ fontSize: '1.4rem', fontWeight: 600, marginBottom: 8 }}>⚡ CLI Usage Dashboard</h2>
-        <p style={{ color: '#64748b', fontSize: '0.9rem' }}>Claude Code & agy (Antigravity) usage monitoring</p>
+        <p style={{ color: 'var(--text-3)', fontSize: '0.9rem' }}>Claude Code & agy (Antigravity) usage monitoring</p>
       </div>
       
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(300px, 1fr))', gap: 20 }}>
         {/* Claude Code Card */}
         <div style={{ 
-          background: '#111827', borderRadius: 12, padding: 20,
-          border: '1px solid rgba(255,255,255,0.06)'
+          background: 'var(--surface)', borderRadius: 12, padding: 20,
+          border: '1px solid var(--line)'
         }}>
           <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 16 }}>
             <div style={{ 
@@ -128,13 +128,13 @@ export function CLIUsageTab() {
             }}>🟣</div>
             <div>
               <div style={{ fontWeight: 600 }}>Claude Code</div>
-              <div style={{ fontSize: '0.75rem', color: '#64748b' }}>Sonnet & Opus agents</div>
+              <div style={{ fontSize: '0.75rem', color: 'var(--text-3)' }}>Sonnet & Opus agents</div>
             </div>
           </div>
           
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16 }}>
             <StatusBadge status={claude.status || 'unknown'} />
-            <span style={{ fontSize: '0.85rem', color: claude.status === 'limited' ? '#f59e0b' : '#64748b', fontWeight: 500 }}>
+            <span style={{ fontSize: '0.85rem', color: claude.status === 'limited' ? '#f59e0b' : 'var(--text-3)', fontWeight: 500 }}>
               {claude.reset_estimate && claude.reset_estimate !== 'N/A' ? `⏱ ${claude.reset_estimate}` : ''}
             </span>
           </div>
@@ -144,72 +144,66 @@ export function CLIUsageTab() {
           </div>
 
           <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
-            <div style={{ background: 'rgba(255,255,255,0.03)', borderRadius: 8, padding: 10 }}>
-              <div style={{ fontSize: '0.7rem', color: '#64748b' }}>Used 5h</div>
+            <div style={{ background: 'var(--bg-2)', borderRadius: 8, padding: 10 }}>
+              <div style={{ fontSize: '0.7rem', color: 'var(--text-3)' }}>Used 5h</div>
               <div style={{ fontSize: '1rem', fontWeight: 500 }}>{claude.utilization_5h != null ? `${claude.utilization_5h}%` : '--'}</div>
             </div>
-            <div style={{ background: 'rgba(255,255,255,0.03)', borderRadius: 8, padding: 10 }}>
-              <div style={{ fontSize: '0.7rem', color: '#64748b' }}>Used 7d</div>
+            <div style={{ background: 'var(--bg-2)', borderRadius: 8, padding: 10 }}>
+              <div style={{ fontSize: '0.7rem', color: 'var(--text-3)' }}>Used 7d</div>
               <div style={{ fontSize: '1rem', fontWeight: 500 }}>{claude.utilization_7d != null ? `${claude.utilization_7d}%` : '--'}</div>
             </div>
           </div>
           
           <UsageChart data={claude.hourly_calls} />
           <div style={{ display: 'flex', justifyContent: 'space-between', marginTop: 4 }}>
-            <span style={{ fontSize: '0.6rem', color: '#64748b' }}>24h ago</span>
-            <span style={{ fontSize: '0.6rem', color: '#64748b' }}>Now</span>
+            <span style={{ fontSize: '0.6rem', color: 'var(--text-3)' }}>24h ago</span>
+            <span style={{ fontSize: '0.6rem', color: 'var(--text-3)' }}>Now</span>
           </div>
         </div>
         
         {/* agy Card */}
         <div style={{ 
-          background: '#111827', borderRadius: 12, padding: 20,
-          border: '1px solid rgba(255,255,255,0.06)'
+          background: 'var(--surface)', borderRadius: 12, padding: 20,
+          border: '1px solid var(--line)'
         }}>
           <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 16 }}>
-            <div style={{ 
-              width: 36, height: 36, borderRadius: 8, 
+            <div style={{
+              width: 36, height: 36, borderRadius: 8,
               background: 'rgba(59,130,246,0.2)', display: 'flex', alignItems: 'center', justifyContent: 'center'
             }}>🔵</div>
             <div>
               <div style={{ fontWeight: 600 }}>agy (Antigravity)</div>
-              <div style={{ fontSize: '0.75rem', color: '#64748b' }}>Multi-model CLI</div>
+              <div style={{ fontSize: '0.75rem', color: 'var(--text-3)' }}>{agy.tier_name || 'Gemini Code Assist'}</div>
             </div>
           </div>
           
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16 }}>
             <StatusBadge status={agy.status || 'unknown'} />
             {agy.status === 'limited' && agy.reset_estimate && (
-              <span style={{ fontSize: '0.8rem', color: '#64748b' }}>⏱ {agy.reset_estimate}</span>
+              <span style={{ fontSize: '0.8rem', color: 'var(--text-3)' }}>⏱ {agy.reset_estimate}</span>
             )}
           </div>
           
-          <div style={{ display: 'flex', justifyContent: 'center', marginBottom: 16 }}>
-            <UsageGauge percent={agy.quota_percent || 0} status={agy.status} label="quota remaining" />
-          </div>
-          
-          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
-            <div style={{ background: 'rgba(255,255,255,0.03)', borderRadius: 8, padding: 10 }}>
-              <div style={{ fontSize: '0.7rem', color: '#64748b' }}>Calls (24h)</div>
-              <div style={{ fontSize: '1rem', fontWeight: 500 }}>{agy.total_calls_24h || 0}</div>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16 }}>
+            <div style={{ background: 'var(--bg-2)', borderRadius: 8, padding: '10px 14px', flex: 1, marginRight: 8 }}>
+              <div style={{ fontSize: '0.7rem', color: 'var(--text-3)' }}>Conversations (24h)</div>
+              <div style={{ fontSize: '1.4rem', fontWeight: 700, color: 'var(--text-1)' }}>{agy.total_calls_24h || 0}</div>
             </div>
-            <div style={{ background: 'rgba(255,255,255,0.03)', borderRadius: 8, padding: 10 }}>
-              <div style={{ fontSize: '0.7rem', color: '#64748b' }}>Last Check</div>
-              <div style={{ fontSize: '1rem', fontWeight: 500 }}>
-                {agy.checked_at ? new Date(agy.checked_at).toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' }) : '--'}
-              </div>
+            <div style={{ background: 'var(--bg-2)', borderRadius: 8, padding: '10px 14px', flex: 1 }}>
+              <div style={{ fontSize: '0.7rem', color: 'var(--text-3)' }}>Plan</div>
+              <div style={{ fontSize: '0.85rem', fontWeight: 600, color: '#10b981' }}>Unlimited ∞</div>
             </div>
           </div>
           
           <UsageChart data={agy.hourly_calls} />
           <div style={{ display: 'flex', justifyContent: 'space-between', marginTop: 4 }}>
-            <span style={{ fontSize: '0.6rem', color: '#64748b' }}>24h ago</span>
-            <span style={{ fontSize: '0.6rem', color: '#64748b' }}>Now</span>
+            <span style={{ fontSize: '0.6rem', color: 'var(--text-3)' }}>24h ago</span>
+            <span style={{ fontSize: '0.6rem', color: 'var(--text-3)' }}>Now</span>
           </div>
         </div>
       </div>
       
-      <div style={{ textAlign: 'center', color: '#64748b', fontSize: '0.75rem', marginTop: 24 }}>
+      <div style={{ textAlign: 'center', color: 'var(--text-3)', fontSize: '0.75rem', marginTop: 24 }}>
         Last updated: {data?.timestamp ? new Date(data.timestamp).toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', second: '2-digit' }) : '--'}
       </div>
     </div>

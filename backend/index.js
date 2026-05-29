@@ -711,11 +711,15 @@ app.get('/api/services/favicon-proxy', async (req, res) => {
 
 app.post('/api/docker/control', async (req, res) => {
     const { name, action } = req.body || {};
-    if (!name || !['start', 'stop', 'restart'].includes(action)) {
+    if (!name || !['start', 'stop', 'restart', 'remove'].includes(action)) {
         return res.status(400).json({ error: 'Invalid name or action' });
     }
     try {
-        await runCommand(`docker ${action} ${shellQuote(name)}`);
+        if (action === 'remove') {
+            await runCommand(`docker rm -f ${shellQuote(name)}`);
+        } else {
+            await runCommand(`docker ${action} ${shellQuote(name)}`);
+        }
         discoveryCache = null; // Clear cache to show new status instantly
         res.json({ ok: true });
     } catch (e) {
@@ -1185,13 +1189,48 @@ app.get('/api/stats', async (req, res) => {
     }
 });
 
-app.get('/api/health', (req, res) => {
+const getSubnetRange = async () => {
+    try {
+        const routeOut = await runCommand("ip route show | grep default");
+        if (routeOut) {
+            const match = routeOut.match(/dev\s+(\S+)/);
+            if (match) {
+                const iface = match[1];
+                const subnetOut = await runCommand(`ip route show | grep "dev ${iface}" | grep -v default | head -n 1`);
+                if (subnetOut) {
+                    const subnetMatch = subnetOut.match(/^(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}\/\d{1,2})/);
+                    if (subnetMatch) {
+                        return subnetMatch[1];
+                    }
+                }
+            }
+        }
+    } catch (e) {}
+    try {
+        const interfaces = os.networkInterfaces();
+        for (const name of Object.keys(interfaces)) {
+            for (const iface of interfaces[name]) {
+                if (iface.family === 'IPv4' && !iface.internal) {
+                    const parts = iface.address.split('.');
+                    if (parts.length === 4) {
+                        return `${parts[0]}.${parts[1]}.${parts[2]}.0/24`;
+                    }
+                }
+            }
+        }
+    } catch (e) {}
+    return '192.168.1.0/24';
+};
+
+app.get('/api/health', async (req, res) => {
+    const subnetRange = await getSubnetRange();
     res.json({
         ok: true,
         version: pkg.version,
         uptime: process.uptime(),
         targetUser: TARGET_USER,
         terminalTokenRequired: !!AGENT_TOKEN,
+        subnetRange: subnetRange
     });
 });
 
@@ -1237,22 +1276,47 @@ app.get('/api/usage-status', async (req, res) => {
 });
 
 const KNOWN_AGENTS = [
-    { id: 'claude', label: 'Claude Code', cmd: 'claude', vendor: 'Anthropic' },
-    { id: 'claude-code', label: 'Claude Code (alias)', cmd: 'claude-code', vendor: 'Anthropic' },
-    { id: 'gemini', label: 'Gemini CLI', cmd: 'gemini', vendor: 'Google' },
-    { id: 'antigravity', label: 'Antigravity', cmd: 'agy', vendor: 'Google DeepMind' },
-    { id: 'codex', label: 'OpenAI Codex CLI', cmd: 'codex', vendor: 'OpenAI' },
-    { id: 'opencode', label: 'OpenCode', cmd: 'opencode', vendor: 'SST' },
-    { id: 'kilocode', label: 'Kilo Code', cmd: 'kilocode', vendor: 'Kilo' },
-    { id: 'kilo', label: 'Kilo (alias)', cmd: 'kilo', vendor: 'Kilo' },
-    { id: 'aider', label: 'Aider', cmd: 'aider', vendor: 'Aider' },
-    { id: 'cursor-agent', label: 'Cursor Agent', cmd: 'cursor-agent', vendor: 'Cursor' },
-    { id: 'cody', label: 'Sourcegraph Cody', cmd: 'cody', vendor: 'Sourcegraph' },
-    { id: 'amp', label: 'Sourcegraph Amp', cmd: 'amp', vendor: 'Sourcegraph' },
-    { id: 'cline', label: 'Cline', cmd: 'cline', vendor: 'Cline' },
-    { id: 'qwen-code', label: 'Qwen Code', cmd: 'qwen-code', vendor: 'Alibaba' },
-    { id: 'ollama', label: 'Ollama', cmd: 'ollama', vendor: 'Ollama' },
-    { id: 'goose', label: 'Goose', cmd: 'goose', vendor: 'Block' },
+// jobArgs(task): returns { args, stdin } for non-interactive / batch execution.
+// Every entry must suppress all permission prompts and exit when done.
+    { id: 'claude',       label: 'Claude Code',           cmd: 'claude',      vendor: 'Anthropic',
+      jobArgs: (t) => ({ args: ['--dangerously-skip-permissions', '--print', t], stdin: null }) },
+    { id: 'claude-code',  label: 'Claude Code (alias)',   cmd: 'claude-code', vendor: 'Anthropic',
+      jobArgs: (t) => ({ args: ['--dangerously-skip-permissions', '--print', t], stdin: null }) },
+    { id: 'gemini',       label: 'Gemini CLI',             cmd: 'gemini',      vendor: 'Google',
+      jobArgs: (t) => ({ args: ['-p', t, '--yolo'],                             stdin: null }) },
+    { id: 'antigravity',  label: 'Antigravity (agy)',      cmd: 'agy',         vendor: 'Google DeepMind',
+      jobArgs: (t) => ({ args: ['--dangerously-skip-permissions', '--print', t], stdin: null }) },
+    { id: 'codex',        label: 'OpenAI Codex CLI',       cmd: 'codex',       vendor: 'OpenAI',
+      jobArgs: (t) => ({ args: ['exec', '--dangerously-bypass-approvals-and-sandbox', t], stdin: null }) },
+    { id: 'opencode',     label: 'OpenCode',               cmd: 'opencode',    vendor: 'SST',
+      jobArgs: (t) => ({ args: ['run', '--dangerously-skip-permissions', t], stdin: null }) },
+    { id: 'kilocode',     label: 'Kilo Code',              cmd: 'kilocode',    vendor: 'Kilo',
+      jobArgs: (t) => ({ args: ['run', '--dangerously-skip-permissions', '--auto', t], stdin: null }) },
+    { id: 'kilo',         label: 'Kilo (alias)',            cmd: 'kilo',        vendor: 'Kilo',
+      jobArgs: (t) => ({ args: ['run', '--dangerously-skip-permissions', '--auto', t], stdin: null }) },
+    { id: 'aider',        label: 'Aider',                  cmd: 'aider',       vendor: 'Aider',
+      jobArgs: (t) => ({ args: ['--message', t, '--yes', '--no-auto-commits'],  stdin: null }) },
+    { id: 'cursor-agent', label: 'Cursor Agent',           cmd: 'cursor-agent',vendor: 'Cursor',
+      jobArgs: (t) => ({ args: [],                                              stdin: t }) },
+    { id: 'cody',         label: 'Sourcegraph Cody',       cmd: 'cody',        vendor: 'Sourcegraph',
+      jobArgs: (t) => ({ args: [],                                              stdin: t }) },
+    { id: 'amp',          label: 'Sourcegraph Amp',        cmd: 'amp',         vendor: 'Sourcegraph',
+      jobArgs: (t) => ({ args: [],                                              stdin: t }) },
+    { id: 'cline',        label: 'Cline',                  cmd: 'cline',       vendor: 'Cline',
+      jobArgs: (t) => ({ args: [],                                              stdin: t }) },
+    { id: 'qwen-code',    label: 'Qwen Code',              cmd: 'qwen-code',   vendor: 'Alibaba',
+      jobArgs: (t) => ({ args: ['--dangerously-skip-permissions', '--print', t], stdin: null }) },
+    { id: 'ollama',       label: 'Ollama',                 cmd: 'ollama',      vendor: 'Ollama',
+      jobArgs: (t) => {
+          const def = process.env.OLLAMA_DEFAULT_MODEL || 'llama3.2';
+          let model = def, prompt = t;
+          const sep = t.indexOf('::');
+          if (sep > 0) { model = t.slice(0, sep).trim() || def; prompt = t.slice(sep + 2).trim(); }
+          else { const fl = t.split('\n', 1)[0].trim(); if (fl && !/\s/.test(fl) && /[a-zA-Z]/.test(fl)) { model = fl; prompt = t.slice(fl.length).trim(); } }
+          return { args: ['run', model, prompt], stdin: null };
+      }},
+    { id: 'goose',        label: 'Goose',                  cmd: 'goose',       vendor: 'Block',
+      jobArgs: (t) => ({ args: ['run', '--no-session', '-m', t],               stdin: null }) },
 ];
 
 const FALLBACK_SEARCH_DIRS = [
@@ -1261,6 +1325,28 @@ const FALLBACK_SEARCH_DIRS = [
     '/usr/local/bin',
     '/usr/bin',
 ];
+
+// Resolve a command name to an absolute path by scanning known dirs synchronously.
+// sudo uses its own secure_path which doesn't include user dirs like ~/.local/bin or
+// /home/linuxbrew, so we must resolve the full path before handing it to spawn+sudo.
+function resolveCmdSync(cmd) {
+    if (path.isAbsolute(cmd)) return cmd;
+    const searchDirs = [
+        ...FALLBACK_SEARCH_DIRS,
+        `/home/${TARGET_USER}/.local/bin`,
+        `/home/${TARGET_USER}/.cargo/bin`,
+        `/home/${TARGET_USER}/bin`,
+        `/root/.local/bin`,
+    ];
+    for (const dir of searchDirs) {
+        try {
+            const full = path.join(dir, cmd);
+            const st = fs.statSync(full);
+            if (st.isFile() && (st.mode & 0o111)) return full;
+        } catch {}
+    }
+    return cmd;
+}
 
 const AGENT_CACHE_TTL_MS = parseInt(process.env.AGENT_CACHE_TTL_MS || '3600000', 10);
 let agentCache = null;
@@ -1959,6 +2045,91 @@ app.post('/api/processes/:pid/nice', async (req, res) => {
     }
 });
 
+// ─── Docker Status & Installation & Containers ──────────────────────────────────
+app.get('/api/docker/status', async (req, res) => {
+    try {
+        const dockerVer = await runCommand('docker --version');
+        const installed = !!dockerVer && dockerVer.trim().startsWith('Docker version');
+        let composeVer = '';
+        let running = false;
+        if (installed) {
+            const composeOut = await runCommand('docker compose version');
+            composeVer = composeOut ? composeOut.trim() : '';
+            const pingOut = await runCommand('docker info 2>/dev/null');
+            running = !!pingOut && pingOut.includes('Containers:');
+        }
+        res.json({
+            installed,
+            version: dockerVer ? dockerVer.trim() : '',
+            composeVersion: composeVer,
+            running
+        });
+    } catch (e) {
+        res.json({ installed: false, version: '', composeVersion: '', running: false });
+    }
+});
+
+app.post('/api/docker/install', (req, res) => {
+    res.setHeader('Content-Type', 'text/event-stream');
+    res.setHeader('Cache-Control', 'no-cache');
+    res.setHeader('X-Accel-Buffering', 'no');
+    res.flushHeaders();
+
+    const send = (obj) => { try { res.write(`data: ${JSON.stringify(obj)}\n\n`); } catch {} };
+    
+    const { spawn } = require('child_process');
+    const shellScript = `
+        echo "=== Updating package lists ==="
+        sudo apt-get update -y
+        
+        echo "=== Installing dependencies ==="
+        sudo apt-get install -y curl ca-certificates gnupg
+        
+        echo "=== Installing Docker via convenience script ==="
+        curl -fsSL https://get.docker.com -o get-docker.sh
+        sudo sh get-docker.sh
+        rm -f get-docker.sh
+        
+        echo "=== Enabling and starting Docker service ==="
+        sudo systemctl enable --now docker
+        
+        echo "=== Adding current user to docker group ==="
+        sudo usermod -aG docker ayman
+        
+        echo "=== Verification ==="
+        docker --version
+        docker compose version
+        
+        echo "=== Done! Please restart or refresh the page if permission errors occur ==="
+    `;
+    
+    const proc = spawn('bash', ['-c', shellScript], {
+        stdio: ['ignore', 'pipe', 'pipe']
+    });
+
+    proc.stdout.on('data', (d) => send({ type: 'log', text: d.toString() }));
+    proc.stderr.on('data', (d) => send({ type: 'log', text: d.toString() }));
+    proc.on('close', (code) => {
+        send({ type: 'done', code });
+        res.end();
+    });
+    res.on('close', () => { try { proc.kill(); } catch {} });
+});
+
+app.get('/api/docker/containers', async (req, res) => {
+    try {
+        const out = await runCommand("docker ps -a --format '{{json .}}' 2>/dev/null");
+        const containers = out.trim().split('\n').filter(Boolean).map(line => {
+            try {
+                return JSON.parse(line);
+            } catch { return null; }
+        }).filter(Boolean);
+        res.json({ containers });
+    } catch (e) {
+        res.status(500).json({ error: e.message });
+    }
+});
+
 // ─── Docker Images ────────────────────────────────────────────────────────────
 app.get('/api/docker/images', async (req, res) => {
     try {
@@ -2511,41 +2682,23 @@ function saveJobs(list) {
 
 const ajRunning = new Map(); // jobId -> { proc, runId, buf }
 
+// Strip ANSI escape sequences from agent output so stored text is readable.
+const ANSI_RE = /\x1b\[[0-9;]*[a-zA-Z]|\x1b\][^\x07\x1b]*[\x07\x1b\\]|\x1b[@-Z\\-_]|[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]/g;
+function stripAnsi(str) { return str.replace(ANSI_RE, ''); }
+
 function ajBuildCmd(agentId, task) {
-    switch (agentId) {
-        case 'claude':
-        case 'claude-code': return { cmd: 'claude',   args: ['--dangerously-skip-permissions', '--print', task], stdin: null };
-        case 'gemini':      return { cmd: 'gemini',   args: ['-p', task, '--yolo'],                              stdin: null };
-        case 'aider':       return { cmd: 'aider',    args: ['--message', task, '--yes', '--no-auto-commits'],   stdin: null };
-        case 'antigravity': return { cmd: 'agy',      args: ['--dangerously-skip-permissions', '--print', task], stdin: null };
-        case 'codex':       return { cmd: 'codex',    args: ['exec', '--dangerously-bypass-approvals-and-sandbox', task], stdin: null };
-        case 'opencode':    return { cmd: 'opencode', args: ['run', task],                                       stdin: null };
-        case 'kilocode':
-        case 'kilo':        return { cmd: agentId === 'kilo' ? 'kilo' : 'kilocode', args: ['run', task],         stdin: null };
-        case 'ollama': {
-            // ollama needs <model> <prompt>. Conventions:
-            //  - "model::prompt"  → split on the first '::'
-            //  - first non-empty line is the model when it contains no spaces (e.g. "llama3.2")
-            //  - otherwise default to OLLAMA_DEFAULT_MODEL env or 'llama3.2'
-            const def = process.env.OLLAMA_DEFAULT_MODEL || 'llama3.2';
-            let model = def, prompt = task;
-            const sep = task.indexOf('::');
-            if (sep > 0) { model = task.slice(0, sep).trim() || def; prompt = task.slice(sep + 2).trim(); }
-            else {
-                const firstLine = task.split('\n', 1)[0].trim();
-                if (firstLine && !/\s/.test(firstLine) && /[a-zA-Z]/.test(firstLine)) {
-                    model = firstLine;
-                    prompt = task.slice(firstLine.length).trim();
-                }
-            }
-            return { cmd: 'ollama', args: ['run', model, prompt], stdin: null };
-        }
-        case 'shell':       return { cmd: 'bash',     args: ['-c', task],                                        stdin: null };
-        default: {
-            const a = KNOWN_AGENTS.find(x => x.id === agentId);
-            return { cmd: a?.cmd || agentId, args: [], stdin: task };
-        }
+    if (agentId === 'shell') return { cmd: 'bash', args: ['-c', task], stdin: null };
+
+    // Look up metadata from KNOWN_AGENTS — driven entirely by the registry entry
+    const meta = KNOWN_AGENTS.find(a => a.id === agentId);
+    if (meta?.jobArgs) {
+        const { args, stdin } = meta.jobArgs(task);
+        return { cmd: meta.cmd, args, stdin };
     }
+
+    // Unknown / future agent: try common patterns based on help probe (best-effort)
+    const cmd = meta?.cmd || agentId;
+    return { cmd, args: [], stdin: task };
 }
 
 function ajFinalizeRun(jobId, runId, { status, output, exitCode }) {
@@ -2568,7 +2721,8 @@ function ajExecute(jobOrId) {
     const ws = loadWorkspaces().find(w => w.id === job.workspaceId);
     const cwd = ws?.cwd || process.env.HOME || `/home/${TARGET_USER}`;
 
-    const { cmd, args, stdin } = ajBuildCmd(job.agentId, job.task);
+    const { cmd: rawCmd, args, stdin } = ajBuildCmd(job.agentId, job.task);
+    const cmd = resolveCmdSync(rawCmd);
     const runId = require('crypto').randomBytes(6).toString('hex');
     const startedAt = new Date().toISOString();
 
@@ -2582,9 +2736,23 @@ function ajExecute(jobOrId) {
         saveJobs(jlist);
     }
 
+    // Build subprocess env.
+    // IMPORTANT: The server runs as root so process.env.HOME=/root.
+    // We always force HOME/USER/LOGNAME to the target user so agents find
+    // their credentials/config in the right place (~/.gemini, ~/.claude, etc.).
+    const userHome = `/home/${TARGET_USER}`;
     const env = {};
     for (const k of ALLOWED_ENV_PASSTHROUGH) if (process.env[k] != null) env[k] = process.env[k];
-    Object.assign(env, { TERM: 'dumb', HOME: process.env.HOME || `/home/${TARGET_USER}`, PATH: process.env.PATH || '/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/home/linuxbrew/.linuxbrew/bin' });
+    Object.assign(env, {
+        TERM: 'dumb',
+        HOME: userHome,
+        USER: TARGET_USER,
+        LOGNAME: TARGET_USER,
+        XDG_CONFIG_HOME: `${userHome}/.config`,
+        XDG_DATA_HOME: `${userHome}/.local/share`,
+        XDG_CACHE_HOME: `${userHome}/.cache`,
+        PATH: process.env.PATH || `/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:${userHome}/.local/bin:/home/linuxbrew/.linuxbrew/bin`,
+    });
 
     let proc;
     try {
@@ -2615,7 +2783,7 @@ function ajExecute(jobOrId) {
         }, 2000);
     };
     const onData = (d) => {
-        buf += d.toString();
+        buf += stripAnsi(d.toString());
         if (buf.length > AJ_MAX_OUTPUT) buf = '…' + buf.slice(-(AJ_MAX_OUTPUT - 1));
         const entry = ajRunning.get(job.id);
         if (entry) entry.buf = buf;
@@ -2645,17 +2813,34 @@ function ajExecute(jobOrId) {
     });
 }
 
-// Agent-jobs scheduler (runs alongside backup scheduler)
+// Agent-jobs scheduler — handles both cron (recurring) and runAt (one-time)
 let ajSchedMin = -1;
 setInterval(() => {
     const now = new Date();
     const min = now.getMinutes();
-    if (min === ajSchedMin) return;
-    ajSchedMin = min;
     try {
-        loadJobs().filter(j => j.enabled && j.schedule && !ajRunning.has(j.id))
-            .forEach(j => { if (isCronDue(j.schedule, now)) { console.log(`[AgentJobs] trigger: ${j.name}`); ajExecute(j); } });
+        const jobs = loadJobs();
+        let dirty = false;
+        for (const j of jobs) {
+            if (ajRunning.has(j.id)) continue;
+            // One-time: runAt is set and due
+            if (j.enabled && j.runAt && new Date(j.runAt) <= now) {
+                console.log(`[AgentJobs] one-time trigger: ${j.name}`);
+                j.runAt = null;
+                dirty = true;
+                ajExecute(j);
+            }
+            // Recurring: cron expression, only fire once per minute
+            if (min !== ajSchedMin && j.enabled && j.schedule && !j.runAt) {
+                if (isCronDue(j.schedule, now)) {
+                    console.log(`[AgentJobs] cron trigger: ${j.name}`);
+                    ajExecute(j);
+                }
+            }
+        }
+        if (dirty) saveJobs(jobs);
     } catch (e) { console.error('[AgentJobs] scheduler:', e.message); }
+    ajSchedMin = min;
 }, 10000);
 
 // ── Agent Jobs API ────────────────────────────────────────────────────────────
@@ -2663,7 +2848,7 @@ app.get('/api/agent-jobs', (req, res) => {
     try {
         const tz = Intl.DateTimeFormat().resolvedOptions().timeZone || process.env.TZ || 'UTC';
         res.json({
-            jobs: loadJobs().map(j => ({ ...j, isRunning: ajRunning.has(j.id), runs: (j.runs || []).map(r => ({ ...r, output: undefined })) })),
+            jobs: loadJobs().map(j => ({ ...j, isRunning: ajRunning.has(j.id), runs: (j.runs || []).map((r, i) => ({ ...r, output: i === 0 ? r.output : undefined })) })),
             tz,
         });
     } catch (e) { res.status(500).json({ error: errMsg(e) }); }
@@ -2682,7 +2867,7 @@ app.get('/api/agent-jobs/:id', (req, res) => {
 
 app.post('/api/agent-jobs', (req, res) => {
     try {
-        const { name, agentId, workspaceId, task, schedule, timeout, enabled } = req.body || {};
+        const { name, agentId, workspaceId, task, schedule, runAt, timeout, enabled } = req.body || {};
         if (!name?.trim() || !agentId || !task?.trim()) return res.status(400).json({ error: 'name, agentId, task required' });
         const job = {
             id: crypto.randomBytes(8).toString('hex'),
@@ -2690,6 +2875,7 @@ app.post('/api/agent-jobs', (req, res) => {
             workspaceId: workspaceId || null,
             task: task.trim().slice(0, 8000),
             schedule: schedule || null,
+            runAt: runAt || null,
             timeout: Math.max(30, Math.min(7200, parseInt(timeout) || 300)),
             enabled: enabled !== false, status: 'idle',
             createdAt: Date.now(), updatedAt: Date.now(), lastRunAt: null, runs: [],
@@ -2704,13 +2890,14 @@ app.put('/api/agent-jobs/:id', (req, res) => {
         const list = loadJobs();
         const idx = list.findIndex(j => j.id === req.params.id);
         if (idx < 0) return res.status(404).json({ error: 'Not found' });
-        const { name, agentId, workspaceId, task, schedule, timeout, enabled } = req.body || {};
+        const { name, agentId, workspaceId, task, schedule, runAt, timeout, enabled } = req.body || {};
         const j = list[idx];
         if (name !== undefined) j.name = name.trim().slice(0, 80);
         if (agentId !== undefined) j.agentId = agentId;
         if (workspaceId !== undefined) j.workspaceId = workspaceId;
         if (task !== undefined) j.task = task.trim().slice(0, 8000);
         if (schedule !== undefined) j.schedule = schedule || null;
+        if (runAt !== undefined) j.runAt = runAt || null;
         if (timeout !== undefined) j.timeout = Math.max(30, Math.min(7200, parseInt(timeout) || 300));
         if (enabled !== undefined) j.enabled = Boolean(enabled);
         j.updatedAt = Date.now();
@@ -2770,6 +2957,45 @@ app.post('/api/agent-jobs/:id/cancel', (req, res) => {
         ajFinalizeRun(req.params.id, live.runId, { status: 'cancelled', output: live.buf, exitCode: -1 });
         res.json({ ok: true });
     } catch (e) { res.status(500).json({ error: errMsg(e) }); }
+});
+
+// SSE stream of live job output (polls buffer every 300ms until job finishes)
+app.get('/api/agent-jobs/:id/stream', (req, res) => {
+    res.setHeader('Content-Type', 'text/event-stream');
+    res.setHeader('Cache-Control', 'no-cache');
+    res.setHeader('Connection', 'keep-alive');
+    res.flushHeaders();
+
+    const send = (obj) => { try { res.write(`data: ${JSON.stringify(obj)}\n\n`); } catch {} };
+    let lastLen = 0;
+    let done = false;
+
+    const tick = () => {
+        if (done) return;
+        const live = ajRunning.get(req.params.id);
+        if (live) {
+            if (live.buf.length > lastLen) {
+                send({ type: 'chunk', text: live.buf.slice(lastLen) });
+                lastLen = live.buf.length;
+            }
+            return;
+        }
+        // Job finished (or never ran) — flush any tail that wasn't streamed yet
+        const job = loadJobs().find(j => j.id === req.params.id);
+        const lastRun = job?.runs?.[0];
+        if (lastRun?.output && lastLen < lastRun.output.length) {
+            send({ type: 'chunk', text: lastRun.output.slice(lastLen) });
+        }
+        send({ type: 'done', status: lastRun?.status || 'idle', exitCode: lastRun?.exitCode ?? null });
+        done = true;
+        clearInterval(iv);
+        res.end();
+    };
+
+    const iv = setInterval(tick, 300);
+    tick();
+
+    res.on('close', () => { done = true; clearInterval(iv); });
 });
 
 // Filesystem directory browser for workspace folder picker
@@ -3602,6 +3828,444 @@ app.post('/api/alerts/config', (req, res) => {
     saveState();
     res.json({ ok: true, alerts: state.alerts });
 });
+
+// ─── Metrics History ──────────────────────────────────────────────────────────
+const METRICS_FILE = process.env.METRICS_FILE || '/var/lib/server-hub/metrics.jsonl';
+
+function appendMetricSample(s) {
+    try {
+        fs.mkdirSync(path.dirname(METRICS_FILE), { recursive: true });
+        fs.appendFileSync(METRICS_FILE, JSON.stringify(s) + '\n');
+    } catch (e) {}
+}
+
+let metricsLastTrim = 0;
+function maybeTrimMetrics() {
+    const now = Date.now();
+    if (now - metricsLastTrim < 3_600_000) return;
+    metricsLastTrim = now;
+    try {
+        const lines = fs.readFileSync(METRICS_FILE, 'utf8').split('\n').filter(Boolean);
+        const max = 20160; // 7 days at 30 s intervals
+        if (lines.length > max) fs.writeFileSync(METRICS_FILE, lines.slice(-max).join('\n') + '\n');
+    } catch (e) {}
+}
+
+setInterval(() => {
+    if (!currentSystemStats) return;
+    appendMetricSample({
+        t: Date.now(),
+        cpu: +(currentSystemStats.cpu || 0).toFixed(1),
+        ram: +(currentSystemStats.ram || 0).toFixed(1),
+        rx: +(currentSystemStats.network?.rxMbps || 0).toFixed(2),
+        tx: +(currentSystemStats.network?.txMbps || 0).toFixed(2),
+        gpu: +(currentSystemStats.gpu || 0).toFixed(1),
+    });
+    maybeTrimMetrics();
+}, 30000);
+
+app.get('/api/metrics/history', (req, res) => {
+    const range = req.query.range || '1h';
+    const rangeMs = { '1h': 3_600_000, '6h': 21_600_000, '24h': 86_400_000, '7d': 604_800_000 }[range] || 3_600_000;
+    const cutoff = Date.now() - rangeMs;
+    try {
+        if (!fs.existsSync(METRICS_FILE)) return res.json({ samples: [], range });
+        let samples = fs.readFileSync(METRICS_FILE, 'utf8')
+            .split('\n').filter(Boolean)
+            .map(l => { try { return JSON.parse(l); } catch { return null; } })
+            .filter(s => s && s.t >= cutoff);
+        const maxPts = 300;
+        if (samples.length > maxPts) {
+            const step = Math.ceil(samples.length / maxPts);
+            samples = samples.filter((_, i) => i % step === 0);
+        }
+        res.json({ samples, range });
+    } catch (e) {
+        res.status(500).json({ error: e.message });
+    }
+});
+
+// ─── LAN Scanner (Enhanced) ───────────────────────────────────────────────────
+const { promises: dnsPromises } = require('dns');
+const dgram = require('dgram');
+const LAN_LABELS_FILE = '/var/lib/server-hub/lan-labels.json';
+
+const COMMON_OUIS = {
+    '00:50:56': 'VMware',      '00:0C:29': 'VMware',      '00:15:5D': 'Hyper-V',
+    'DC:A6:32': 'Raspberry Pi','B8:27:EB': 'Raspberry Pi','E4:5F:01': 'Raspberry Pi',
+    '00:11:32': 'Synology',    '00:08:9B': 'QNAP',        'D8:D6:68': 'Western Digital',
+    '74:DA:38': 'TP-Link',     'C4:6E:1F': 'TP-Link',     '50:C7:BF': 'TP-Link',    '98:DA:C4': 'TP-Link',
+    '18:D6:C7': 'ASUS',        '04:D4:C4': 'ASUS',        'F8:32:E4': 'ASUS',
+    'FC:34:97': 'Amazon',      '40:B4:CD': 'Amazon',       '50:F5:DA': 'Amazon',
+    '00:1A:11': 'Google',      'F4:F5:D8': 'Google',       '20:DF:B9': 'Google',     'CC:F4:11': 'Google',
+    'AC:BC:32': 'Apple',       'A4:83:E7': 'Apple',        'F0:18:98': 'Apple',      '28:6D:CD': 'Samsung',
+    '14:91:82': 'Xiaomi',      '64:64:4A': 'Xiaomi',       '28:6C:07': 'Xiaomi',
+    '70:5A:0F': 'Netgear',     'C4:04:15': 'Netgear',
+    'C8:D3:A3': 'D-Link',      'B0:C5:54': 'D-Link',
+    '00:1D:7E': 'Cisco-Linksys','00:25:9C': 'Cisco',
+    '80:2A:A8': 'Ubiquiti',    'F4:92:BF': 'Ubiquiti',    'FC:EC:DA': 'Ubiquiti',
+    '08:65:F0': 'JM Zengge',
+};
+function getMfr(mac) {
+    if (!mac) return null;
+    const u = mac.toUpperCase();
+    return COMMON_OUIS[u.slice(0, 8)] || COMMON_OUIS[u.slice(0, 5)] || null;
+}
+
+function loadLanLabels() {
+    try { return JSON.parse(fs.readFileSync(LAN_LABELS_FILE, 'utf8')); } catch { return {}; }
+}
+function saveLanLabels(labels) {
+    fs.mkdirSync(path.dirname(LAN_LABELS_FILE), { recursive: true });
+    fs.writeFileSync(LAN_LABELS_FILE, JSON.stringify(labels, null, 2));
+}
+
+async function reverseDns(ip) {
+    try { const n = await dnsPromises.reverse(ip); return n[0] || null; } catch { return null; }
+}
+
+async function nmblookupName(ip) {
+    return new Promise(resolve => {
+        exec(`nmblookup -A ${shellQuote(ip)} 2>/dev/null`, { timeout: 1500 }, (err, out) => {
+            if (!out) return resolve(null);
+            const m = out.match(/^\s+(\S+)\s+<00>\s+-\s+B\s+<ACTIVE>/m);
+            resolve(m ? m[1].trim() : null);
+        });
+    });
+}
+
+function sendWolPacket(mac, broadcast = '255.255.255.255') {
+    const hex = mac.replace(/[:\-]/g, '');
+    if (hex.length !== 12) throw new Error('Invalid MAC');
+    const macBuf = Buffer.from(hex, 'hex');
+    const magic = Buffer.concat([Buffer.alloc(6, 0xff), ...Array(16).fill(macBuf)]);
+    return new Promise((resolve, reject) => {
+        const sock = dgram.createSocket('udp4');
+        sock.bind(() => {
+            sock.setBroadcast(true);
+            sock.send(magic, 0, magic.length, 9, broadcast, err => { sock.close(); err ? reject(err) : resolve(); });
+        });
+    });
+}
+
+const IP_VALID_RE = /^(\d{1,3}\.){3}\d{1,3}$/;
+const MAC_VALID_RE = /^([0-9A-Fa-f]{2}[:\-]){5}[0-9A-Fa-f]{2}$/;
+const isValidIp = ip => IP_VALID_RE.test(ip) && ip.split('.').every(n => +n <= 255);
+
+// GET /api/network/lan — ARP table with parallel hostname resolution
+app.get('/api/network/lan', async (req, res) => {
+    try {
+        const neighOut = await runCommand('ip neigh show 2>/dev/null');
+        const devices = {};
+        for (const line of neighOut.trim().split('\n').filter(Boolean)) {
+            const m = line.match(/^(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})\s+dev\s+(\S+)\s+(?:lladdr\s+([a-f0-9:]+)\s+)?(\S+)/i);
+            if (!m) continue;
+            const [, ip, iface, mac, state] = m;
+            if (state === 'FAILED') continue;
+            devices[ip] = { ip, mac: mac ? mac.toUpperCase() : null, iface, state: state.toLowerCase(), hostname: null, vendor: getMfr(mac), latency: null };
+        }
+        const labels = loadLanLabels();
+        await Promise.all(Object.keys(devices).map(async ip => {
+            const d = devices[ip];
+            d.hostname = await reverseDns(ip);
+            if (!d.hostname) d.hostname = await nmblookupName(ip);
+            if (d.mac && labels[d.mac.toUpperCase()]) d.label = labels[d.mac.toUpperCase()];
+        }));
+        res.json({ devices: Object.values(devices), scannedAt: Date.now() });
+    } catch (e) {
+        res.status(500).json({ error: e.message });
+    }
+});
+
+// POST /api/network/lan/scan — active nmap scan, SSE
+app.post('/api/network/lan/scan', async (req, res) => {
+    res.setHeader('Content-Type', 'text/event-stream');
+    res.setHeader('Cache-Control', 'no-cache');
+    res.setHeader('X-Accel-Buffering', 'no');
+    res.flushHeaders();
+    const send = obj => { try { res.write(`data: ${JSON.stringify(obj)}\n\n`); } catch {} };
+
+    try {
+        const customSubnet = typeof req.body?.subnet === 'string' && req.body.subnet.trim() ? req.body.subnet.trim() : null;
+        const subnet = customSubnet || await getSubnetRange();
+        send({ type: 'status', msg: `Scanning ${subnet}…` });
+
+        const nmapBin = (await runCommand('which nmap 2>/dev/null')).trim();
+        if (nmapBin) {
+            const proc = spawn('nmap', ['-sn', '-T4', subnet]);
+            let buf = '';
+            let cur = null;
+            const labels = loadLanLabels();
+            const flush = async () => {
+                if (!cur) return;
+                const d = cur; cur = null;
+                if (!d.hostname) d.hostname = await reverseDns(d.ip);
+                if (!d.hostname && d.mac) d.hostname = await nmblookupName(d.ip);
+                if (d.mac && labels[d.mac]) d.label = labels[d.mac];
+                send({ type: 'device', ...d });
+            };
+            proc.stdout.on('data', d => {
+                buf += d.toString();
+                const lines = buf.split('\n');
+                buf = lines.pop();
+                for (const line of lines) {
+                    const hm = line.match(/^Nmap scan report for (.+)/);
+                    if (hm) {
+                        // fire-and-forget flush of previous device so we don't block stream
+                        if (cur) { const prev = cur; cur = null; (async () => { if (!prev.hostname) prev.hostname = await reverseDns(prev.ip); send({ type: 'device', ...prev }); })(); }
+                        const wh = hm[1].match(/^(.+?)\s+\((\d+\.\d+\.\d+\.\d+)\)$/);
+                        cur = wh ? { ip: wh[2], hostname: wh[1], mac: null, vendor: null, latency: null }
+                                 : { ip: hm[1].trim(), hostname: null, mac: null, vendor: null, latency: null };
+                        continue;
+                    }
+                    if (!cur) continue;
+                    const lm = line.match(/Host is up \(([0-9.]+)s latency\)/);
+                    if (lm) { cur.latency = Math.round(parseFloat(lm[1]) * 1000); continue; }
+                    const mm = line.match(/MAC Address: ([0-9A-Fa-f:]{17})\s+\(([^)]+)\)/);
+                    if (mm) { cur.mac = mm[1].toUpperCase(); cur.vendor = mm[2] !== 'Unknown' ? mm[2] : null; }
+                }
+            });
+            proc.stderr.on('data', () => {});
+            proc.on('close', async () => {
+                await flush();
+                send({ type: 'done', subnet }); res.end();
+            });
+            res.on('close', () => { try { proc.kill(); } catch {} });
+        } else {
+            const base = subnet.replace(/\.\d+\/\d+$/, '');
+            send({ type: 'status', msg: `nmap not found — ping sweep of ${base}.1-254…` });
+            const proc = spawn('bash', ['-c', `for i in $(seq 1 254); do (ping -c1 -W1 ${base}.$i &>/dev/null && echo ${base}.$i) & done; wait`]);
+            let buf = '';
+            proc.stdout.on('data', d => {
+                buf += d.toString();
+                const lines = buf.split('\n');
+                buf = lines.pop();
+                for (const line of lines.filter(Boolean)) send({ type: 'device', ip: line.trim(), hostname: null, mac: null, vendor: null, latency: null });
+            });
+            proc.stderr.on('data', () => {});
+            proc.on('close', () => { send({ type: 'done', subnet }); res.end(); });
+            res.on('close', () => { try { proc.kill(); } catch {} });
+        }
+    } catch (e) {
+        send({ type: 'error', msg: e.message });
+        res.end();
+    }
+});
+
+// POST /api/network/lan/portscan — per-device port scan, SSE
+const DEFAULT_SCAN_PORTS = '21,22,23,25,53,80,443,445,3306,3389,5900,8080,8443,9000,9090,27017';
+app.post('/api/network/lan/portscan', (req, res) => {
+    const { ip, ports } = req.body || {};
+    if (!ip || !isValidIp(ip)) return res.status(400).json({ error: 'Invalid IP' });
+    const portList = (typeof ports === 'string' && /^[\d,\-]+$/.test(ports)) ? ports : DEFAULT_SCAN_PORTS;
+
+    res.setHeader('Content-Type', 'text/event-stream');
+    res.setHeader('Cache-Control', 'no-cache');
+    res.setHeader('X-Accel-Buffering', 'no');
+    res.flushHeaders();
+    const send = obj => { try { res.write(`data: ${JSON.stringify(obj)}\n\n`); } catch {} };
+
+    send({ type: 'status', msg: `Scanning ${ip}…` });
+    const proc = spawn('nmap', ['-sV', '--version-intensity', '0', '-T4', '--open', '-p', portList, ip]);
+    let buf = '';
+    const open = [];
+    let inTable = false;
+    proc.stdout.on('data', d => {
+        buf += d.toString();
+        const lines = buf.split('\n');
+        buf = lines.pop();
+        for (const line of lines) {
+            if (/^PORT\s+STATE\s+SERVICE/.test(line)) { inTable = true; continue; }
+            if (!inTable) continue;
+            const pm = line.match(/^(\d+)\/(tcp|udp)\s+(\S+)\s+(\S+)\s*(.*)/);
+            if (pm) {
+                const p = { port: +pm[1], proto: pm[2], state: pm[3], service: pm[4], version: pm[5].trim() };
+                open.push(p);
+                send({ type: 'port', ...p });
+            }
+        }
+    });
+    proc.stderr.on('data', () => {});
+    proc.on('close', code => { send({ type: 'done', open, code }); res.end(); });
+    res.on('close', () => { try { proc.kill(); } catch {} });
+});
+
+// GET /api/network/lan/labels
+app.get('/api/network/lan/labels', (req, res) => res.json({ labels: loadLanLabels() }));
+
+// POST /api/network/lan/labels
+app.post('/api/network/lan/labels', (req, res) => {
+    const { mac, label } = req.body || {};
+    if (!mac || !MAC_VALID_RE.test(mac)) return res.status(400).json({ error: 'Invalid MAC' });
+    const labels = loadLanLabels();
+    const key = mac.toUpperCase().replace(/-/g, ':');
+    if (label && label.trim()) labels[key] = label.trim(); else delete labels[key];
+    saveLanLabels(labels);
+    res.json({ ok: true });
+});
+
+// POST /api/network/lan/wol — Wake-on-LAN magic packet
+app.post('/api/network/lan/wol', async (req, res) => {
+    const { mac } = req.body || {};
+    if (!mac || !MAC_VALID_RE.test(mac)) return res.status(400).json({ error: 'Invalid MAC' });
+    try { await sendWolPacket(mac); res.json({ ok: true }); }
+    catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// ─── Environment Variables Manager ────────────────────────────────────────────
+const ENV_DENIED = ['/etc', '/root', '/boot', '/usr', '/var', '/proc', '/sys', '/dev'];
+function safeEnvPath(p) {
+    if (typeof p !== 'string' || !p) throw Object.assign(new Error('Invalid path'), { status: 400 });
+    const abs = path.resolve(p);
+    if (ENV_DENIED.some(d => abs === d || abs.startsWith(d + path.sep))) {
+        throw Object.assign(new Error('Path denied'), { status: 403 });
+    }
+    return abs;
+}
+
+function parseEnvFile(content) {
+    return content.split('\n').map(raw => {
+        const line = raw.trimEnd();
+        if (!line || line.startsWith('#')) return { type: line.startsWith('#') ? 'comment' : 'blank', raw: line };
+        const eq = line.indexOf('=');
+        if (eq < 1) return { type: 'unknown', raw: line };
+        const key = line.slice(0, eq).trim();
+        let val = line.slice(eq + 1).trim();
+        const quoted = (val.startsWith('"') && val.endsWith('"')) || (val.startsWith("'") && val.endsWith("'"));
+        if (quoted) val = val.slice(1, -1);
+        return { type: 'pair', key, value: val, quoted, raw: line };
+    });
+}
+
+function serializeEnvFile(entries) {
+    return entries.map(e => {
+        if (e.type !== 'pair') return e.raw;
+        const needsQuote = /[ #"]/.test(e.value);
+        const val = needsQuote ? `"${e.value.replace(/"/g, '\\"')}"` : e.value;
+        return `${e.key}=${val}`;
+    }).join('\n') + '\n';
+}
+
+app.get('/api/envfiles/find', (req, res) => {
+    const { dir } = req.query;
+    if (!dir) return res.status(400).json({ error: 'dir required' });
+    let safe;
+    try { safe = safeEnvPath(dir); } catch (e) { return res.status(e.status || 400).json({ error: e.message }); }
+    const found = [];
+    const SKIP = new Set(['node_modules', '.git', '.next', 'dist', 'build', '__pycache__', '.venv', 'venv']);
+    function scan(d, depth) {
+        if (depth > 4 || found.length >= 50) return;
+        let entries;
+        try { entries = fs.readdirSync(d, { withFileTypes: true }); } catch { return; }
+        for (const entry of entries) {
+            if (entry.isFile() && /^\.env/.test(entry.name)) found.push(path.join(d, entry.name));
+            else if (entry.isDirectory() && !SKIP.has(entry.name) && !entry.name.startsWith('.')) scan(path.join(d, entry.name), depth + 1);
+        }
+    }
+    scan(safe, 0);
+    res.json({ files: found });
+});
+
+app.get('/api/envfiles/read', (req, res) => {
+    let safe;
+    try { safe = safeEnvPath(req.query.path); } catch (e) { return res.status(e.status || 400).json({ error: e.message }); }
+    try {
+        const content = fs.readFileSync(safe, 'utf8');
+        const entries = parseEnvFile(content);
+        const examplePath = safe.replace(/\.env(\.[^.]+)?$/, '.env.example');
+        let exampleKeys = [];
+        if (fs.existsSync(examplePath)) {
+            exampleKeys = parseEnvFile(fs.readFileSync(examplePath, 'utf8')).filter(e => e.type === 'pair').map(e => e.key);
+        }
+        res.json({ path: safe, entries, exampleKeys });
+    } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+app.post('/api/envfiles/save', (req, res) => {
+    const { path: p, entries } = req.body || {};
+    let safe;
+    try { safe = safeEnvPath(p); } catch (e) { return res.status(e.status || 400).json({ error: e.message }); }
+    if (!Array.isArray(entries)) return res.status(400).json({ error: 'entries required' });
+    try {
+        fs.writeFileSync(safe, serializeEnvFile(entries), 'utf8');
+        res.json({ ok: true });
+    } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// ─── Package Manager ──────────────────────────────────────────────────────────
+const PKG_NAME_RE = /^[a-zA-Z0-9][a-zA-Z0-9.+\-:~]*$/;
+
+app.get('/api/packages/search', async (req, res) => {
+    const { q } = req.query;
+    if (!q || q.length < 2 || q.length > 80) return res.status(400).json({ error: 'q must be 2–80 chars' });
+    try {
+        const [searchOut, installedOut] = await Promise.all([
+            runCommand(`apt-cache search ${shellQuote(q)} 2>/dev/null | head -n 100`),
+            runCommand("dpkg-query -W -f='${Package}\\n' 2>/dev/null"),
+        ]);
+        const installed = new Set(installedOut.trim().split('\n').filter(Boolean));
+        const packages = searchOut.trim().split('\n').filter(Boolean).map(line => {
+            const i = line.indexOf(' - ');
+            if (i < 0) return null;
+            return { name: line.slice(0, i).trim(), desc: line.slice(i + 3).trim(), installed: installed.has(line.slice(0, i).trim()) };
+        }).filter(Boolean);
+        res.json({ packages, query: q });
+    } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+app.get('/api/packages/installed', async (req, res) => {
+    const filter = (req.query.q || '').toLowerCase();
+    try {
+        const out = await runCommand("dpkg-query -W -f='${Package}\\t${Version}\\t${Installed-Size}\\t${Status}\\n' 2>/dev/null | head -n 2000");
+        const packages = out.trim().split('\n').filter(Boolean).map(line => {
+            const [name, version, size, ...statusParts] = line.split('\t');
+            const status = statusParts.join('\t').trim();
+            return { name: (name || '').trim(), version: (version || '').trim(), size: parseInt(size, 10) || 0, status };
+        }).filter(p => p.name && p.status.startsWith('install ok') && (!filter || p.name.includes(filter)));
+        res.json({ packages });
+    } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+app.get('/api/packages/info', async (req, res) => {
+    const { name } = req.query;
+    if (!name || !PKG_NAME_RE.test(name)) return res.status(400).json({ error: 'Invalid package name' });
+    try {
+        const out = await runCommand(`apt-cache show ${shellQuote(name)} 2>/dev/null | head -n 50`);
+        if (!out.trim()) return res.status(404).json({ error: 'Package not found' });
+        const fields = {};
+        let cur = null;
+        for (const line of out.split('\n')) {
+            if (/^\w/.test(line)) {
+                const col = line.indexOf(':');
+                if (col > 0) { cur = line.slice(0, col); fields[cur] = line.slice(col + 1).trim(); }
+            } else if (cur && line.startsWith(' ') && ['Description', 'Depends', 'Recommends'].includes(cur)) {
+                fields[cur] += ' ' + line.trim();
+            }
+        }
+        res.json({ info: fields });
+    } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+function pkgSse(action, packages, req, res) {
+    if (!Array.isArray(packages) || !packages.length) return res.status(400).json({ error: 'packages required' });
+    if (!packages.every(p => PKG_NAME_RE.test(p))) return res.status(400).json({ error: 'Invalid package name(s)' });
+    res.setHeader('Content-Type', 'text/event-stream');
+    res.setHeader('Cache-Control', 'no-cache');
+    res.setHeader('X-Accel-Buffering', 'no');
+    res.flushHeaders();
+    const send = (obj) => { try { res.write(`data: ${JSON.stringify(obj)}\n\n`); } catch {} };
+    const proc = spawn('apt-get', [action, '-y', ...packages], {
+        env: { ...process.env, DEBIAN_FRONTEND: 'noninteractive' },
+        stdio: ['ignore', 'pipe', 'pipe'],
+    });
+    proc.stdout.on('data', d => send({ type: 'log', text: d.toString() }));
+    proc.stderr.on('data', d => send({ type: 'log', text: d.toString() }));
+    proc.on('close', code => { send({ type: 'done', code }); res.end(); });
+    req.on('close', () => { try { proc.kill(); } catch {} });
+}
+
+app.post('/api/packages/install', (req, res) => pkgSse('install', req.body?.packages, req, res));
+app.post('/api/packages/remove',  (req, res) => pkgSse('remove',  req.body?.packages, req, res));
 
 const frontendPath = path.join(__dirname, '../frontend/dist');
 if (fs.existsSync(frontendPath)) {

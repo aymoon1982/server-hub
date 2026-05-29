@@ -2105,30 +2105,39 @@ input, textarea, select { font-family: inherit; font-size: inherit; color: var(-
     min-width: 0;
   }
 
-  /* ── Layout: switch sidebar to topbar-like on mobile ──────────────── */
-  .shell[data-nav="sidebar"] {
+  /* ── Layout: switch sidebar & topbar to bottom-tabs on mobile ──────── */
+  .shell[data-nav="sidebar"],
+  .shell[data-nav="topbar"] {
     grid-template-columns: 1fr;
-    grid-template-rows: 48px 44px 1fr;
+    grid-template-rows: 48px 1fr 50px;
     grid-template-areas:
       "topbar"
-      "tabs"
-      "main";
+      "main"
+      "tabs";
   }
   .shell-sidebar { display: none !important; }
   .shell-tabs--sidebar-hidden { display: flex; }
 
-  /* Top tab bar — ONLY horizontal scroll allowed on the page */
+  /* Bottom tab bar — ONLY horizontal scroll allowed on the page */
   .shell-tabs {
     overflow-x: auto;
     -webkit-overflow-scrolling: touch;
     scrollbar-width: none;
     flex-wrap: nowrap;
     padding: 0 8px;
+    border-top: 1px solid var(--line);
+    border-bottom: none;
+    background: var(--bg-2);
+    align-items: center;
   }
   .shell-tabs::-webkit-scrollbar { display: none; }
   .shell-tabs .tab-pill { padding: 8px 10px; font-size: 12px; flex-shrink: 0; }
   .shell-tabs .tab-pill .nav-glyph { display: none; }
   .shell-tabs-sep { display: none; }
+  .shell-tabs .tab-pill.is-active::after {
+    bottom: auto;
+    top: 0;
+  }
 
   /* Compact top bar */
   .shell-top { padding: 0 8px; gap: 6px; }
@@ -2655,3 +2664,278 @@ input, textarea, select { font-family: inherit; font-size: inherit; color: var(-
   .kpi-val { font-size: 18px; }
   .ws-tb-label { display: none !important; }
 }
+
+.spinner {
+  display: inline-block;
+  width: 16px;
+  height: 16px;
+  border: 2px solid var(--line);
+  border-top-color: var(--accent);
+  border-radius: 50%;
+  animation: spin 1s linear infinite;
+}
+@keyframes spin {
+  to { transform: rotate(360deg); }
+}
+
+/* ─── Wallpaper & Premium Glassmorphism (Feature 19) ─── */
+.shell-wallpaper {
+  position: fixed;
+  inset: 0;
+  z-index: -1;
+  pointer-events: none;
+  background-size: cover;
+  background-position: center;
+  transition: background-image 0.5s ease-in-out, filter 0.3s ease;
+}
+
+[data-wallpaper="true"] {
+  --bg: transparent;
+  --bg-2: rgba(22, 20, 26, 0.45);
+  --surface: rgba(30, 27, 36, 0.5);
+  --surface-2: rgba(40, 36, 48, 0.6);
+  --line: rgba(255, 255, 255, 0.08);
+  --line-2: rgba(255, 255, 255, 0.12);
+}
+
+[data-wallpaper="true"][data-theme="light"] {
+  --bg: transparent;
+  --bg-2: rgba(255, 255, 255, 0.45);
+  --surface: rgba(255, 255, 255, 0.6);
+  --surface-2: rgba(245, 245, 245, 0.7);
+  --line: rgba(0, 0, 0, 0.08);
+  --line-2: rgba(0, 0, 0, 0.12);
+}
+
+[data-wallpaper="true"] .shell-sidebar,
+[data-wallpaper="true"] .shell-top,
+[data-wallpaper="true"] .shell-tabs,
+[data-wallpaper="true"] .card,
+[data-wallpaper="true"] .twk-panel,
+[data-wallpaper="true"] .modal {
+  backdrop-filter: blur(20px) saturate(140%);
+  -webkit-backdrop-filter: blur(20px) saturate(140%);
+}
+
+[data-wallpaper="true"] .card {
+  box-shadow: 0 4px 24px -4px rgba(0, 0, 0, 0.25);
+  border: 1px solid var(--line);
+}
+
+/* ─── Customize mode drag & drop ─── */
+.widget-drag-over {
+  border: 2px dashed var(--accent) !important;
+  opacity: 0.7;
+  transform: scale(0.99);
+  transition: all 0.2s ease;
+}
+
+.widget-customizing {
+  border: 1.5px dashed var(--accent-line) !important;
+  position: relative;
+  transition: border-color 0.2s ease;
+  cursor: grab;
+}
+
+.widget-customizing:active {
+  cursor: grabbing;
+}
+
+.widget-customizing::before {
+  content: "✥ Drag Widget";
+  position: absolute;
+  top: 4px;
+  right: 4px;
+  background: var(--accent);
+  color: var(--accent-ink);
+  font-size: 9px;
+  font-weight: 700;
+  padding: 2px 6px;
+  border-radius: 4px;
+  pointer-events: none;
+  opacity: 0.85;
+  z-index: 10;
+}
+
+.widget-custom-controls {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 6px 10px;
+  background: var(--surface-2);
+  border-bottom: 1px solid var(--line);
+  border-radius: var(--radius-lg) var(--radius-lg) 0 0;
+  margin-top: calc(-1 * var(--pad));
+  margin-left: calc(-1 * var(--pad));
+  margin-right: calc(-1 * var(--pad));
+  z-index: 5;
+}
+
+/* ─── New widgets (Feature 19) ─── */
+.clock-widget {
+  text-align: center;
+  padding: 10px 10px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  height: 100%;
+}
+.clock-time {
+  font-size: 34px;
+  font-weight: 700;
+  letter-spacing: -0.02em;
+  color: var(--text);
+  line-height: 1.1;
+}
+.clock-date {
+  font-size: 11px;
+  color: var(--text-3);
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  margin-top: 4px;
+}
+.clock-uptime {
+  font-size: 9.5px;
+  background: var(--accent-soft);
+  color: var(--accent);
+  padding: 2px 8px;
+  border-radius: 99px;
+  display: inline-block;
+  margin-top: 8px;
+  font-weight: 600;
+}
+
+.weather-widget {
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  align-items: center;
+  gap: 4px;
+  padding: 10px;
+  height: 100%;
+}
+.weather-main {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+.weather-temp {
+  font-size: 26px;
+  font-weight: 700;
+  color: var(--text);
+}
+.weather-desc {
+  font-size: 11px;
+  color: var(--text-2);
+  text-transform: capitalize;
+}
+.weather-loc {
+  font-size: 10px;
+  font-weight: 600;
+  color: var(--text-3);
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  cursor: pointer;
+}
+.weather-loc:hover {
+  color: var(--accent);
+}
+
+.qsearch-widget {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  justify-content: center;
+  height: 100%;
+}
+.qsearch-input-wrap {
+  position: relative;
+  display: flex;
+  align-items: center;
+}
+.qsearch-input {
+  width: 100%;
+  padding: 8px 12px;
+  border: 1px solid var(--line);
+  background: var(--surface-2);
+  border-radius: 8px;
+  font-size: 11.5px;
+  outline: none;
+  color: var(--text);
+}
+.qsearch-input:focus {
+  border-color: var(--accent);
+}
+.qsearch-engines {
+  display: flex;
+  gap: 4px;
+}
+.qsearch-engine-btn {
+  flex: 1;
+  font-size: 9.5px;
+  padding: 3px;
+  border: 1px solid var(--line);
+  background: var(--surface-2);
+  color: var(--text-3);
+  border-radius: 4px;
+  cursor: pointer;
+  text-align: center;
+}
+.qsearch-engine-btn.active {
+  background: var(--accent-soft);
+  color: var(--accent);
+  border-color: var(--accent-line);
+}
+
+.memo-widget {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-height: 120px;
+}
+.memo-textarea {
+  flex: 1;
+  width: 100%;
+  border: 0;
+  background: transparent;
+  resize: none;
+  outline: none;
+  font-size: 11.5px;
+  color: var(--text-2);
+  font-family: inherit;
+  line-height: 1.4;
+}
+
+.gauges-row {
+  display: flex;
+  justify-content: space-around;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 12px;
+  padding: 8px 0;
+}
+.gauge-item {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+}
+.gauge-label-compact {
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--text-3);
+  font-weight: 600;
+}
+
+.context-item {
+  transition: background-color 0.1s ease;
+}
+.context-item:hover {
+  background-color: var(--hover) !important;
+}
+
+

@@ -5,7 +5,7 @@ import './App.css';
 
 import { UIProvider, Modal } from './ui-bridge.jsx';
 import { SessionsProvider, useSessions } from './sessions.jsx';
-import { useTweaks, TweaksPanel, TweakSection, TweakRadio, TweakColor, TweakButton } from './tweaks-panel.jsx';
+import { useTweaks, TweaksPanel, TweakSection, TweakRadio, TweakColor, TweakButton, TweakText, TweakSlider } from './tweaks-panel.jsx';
 import {
   Overview,
   ServicesTab,
@@ -16,24 +16,24 @@ import {
   SystemTab,
   KBD
 } from './tabs.jsx';
-import { PowerMenu, DockerImagesTab, StacksTab } from './features.jsx';
-import { CodeWorkspaceTab } from './code-workspace.jsx';
-import { AgentJobsTab } from './agent-jobs.jsx';
-import { CLIUsageTab } from './cli-usage.jsx';
+import { PowerMenu, DockerContainersTab, DockerImagesTab, StacksTab } from './features.jsx';
+import { CodeHubTab } from './code-hub.jsx';
+import { LANScannerTab } from './lan-scanner.jsx';
+import { EnvManagerTab } from './env-manager.jsx';
 
 const TABS = [
   { id: 'overview', label: 'Overview', glyph: '◇', section: 'system' },
   { id: 'system',   label: 'System',   glyph: '⊟', section: 'system', badge: true },
   { id: 'web',      label: 'Web UIs',  glyph: '▦', section: 'services' },
   { id: 'backend',  label: 'Backend',  glyph: '⇆', section: 'services' },
-  { id: 'docker',   label: 'Images',   glyph: '◈', section: 'services' },
+  { id: 'docker',   label: 'Docker',   glyph: '◈', section: 'services' },
+  { id: 'lan',      label: 'LAN',      glyph: '⇌', section: 'services' },
   { id: 'code',     label: 'Code',     glyph: '⌘', section: 'shell' },
-  { id: 'jobs',     label: 'Jobs',     glyph: '◫', section: 'shell' },
   { id: 'agents',   label: 'Agents',   glyph: '✦', section: 'services' },
   { id: 'samba',    label: 'Samba',    glyph: '◫', section: 'storage' },
   { id: 'files',    label: 'Files',    glyph: '▢', section: 'storage' },
+  { id: 'envfiles', label: 'Env',      glyph: '⊙', section: 'storage' },
   { id: 'ssh',      label: 'SSH',      glyph: '⇄', section: 'shell' },
-  { id: 'usage',    label: 'CLI Usage', glyph: '⚡', section: 'system' },
 ];
 
 const SECTIONS = [
@@ -48,7 +48,16 @@ const TWEAK_DEFAULTS = {
   "theme": "dark",
   "density": "comfortable",
   "cardStyle": "tile",
-  "accent": "#a78bfa"
+  "accent": "#a78bfa",
+  "wallpaper": "none",
+  "customWallpaperUrl": "",
+  "wallpaperBlur": 0
+};
+
+const WALLPAPERS = {
+  cosmic: 'https://images.unsplash.com/photo-1618005182384-a83a8bd57fbe?w=1920&q=80',
+  sunset: 'https://images.unsplash.com/photo-1579546929518-9e396f3cc809?w=1920&q=80',
+  cyber: 'https://images.unsplash.com/photo-1607604276583-eef5d076aa5f?w=1920&q=80'
 };
 
 const ACCENT_PRESETS = {
@@ -61,11 +70,128 @@ const ACCENT_PRESETS = {
 const ACCENT_OPTS = Object.keys(ACCENT_PRESETS);
 
 function DockerTab() {
-  const [sub, setSub] = useState('images');
+  const [status, setStatus] = useState({ installed: true, version: '', composeVersion: '', running: true });
+  const [loading, setLoading] = useState(true);
+  const [sub, setSub] = useState('containers');
+  const [logs, setLogs] = useState([]);
+  const [installing, setInstalling] = useState(false);
+
+  const checkStatus = () => {
+    setLoading(true);
+    axios.get('/api/docker/status')
+      .then(r => {
+        setStatus(r.data);
+        setLoading(false);
+      })
+      .catch(() => {
+        setLoading(false);
+      });
+  };
+
+  useEffect(() => {
+    checkStatus();
+  }, []);
+
+  const handleInstall = () => {
+    setInstalling(true);
+    setLogs([]);
+    const eventSource = new EventSource('/api/docker/install', { withCredentials: true });
+    
+    eventSource.onmessage = (event) => {
+      try {
+        const data = JSON.parse(event.data);
+        if (data.type === 'log') {
+          setLogs(prev => [...prev, data.text]);
+        } else if (data.type === 'done') {
+          eventSource.close();
+          setInstalling(false);
+          window.UI.toast({
+            kind: data.code === 0 ? 'ok' : 'err',
+            title: data.code === 0 ? 'Docker installed' : 'Installation failed',
+            body: data.code === 0 ? 'Docker has been successfully installed!' : 'See log for details.'
+          });
+          checkStatus();
+        }
+      } catch (e) {
+        console.error(e);
+      }
+    };
+
+    eventSource.onerror = (e) => {
+      eventSource.close();
+      setInstalling(false);
+      window.UI.toast({ kind: 'err', title: 'Connection lost', body: 'Failed to stream installation output.' });
+    };
+  };
+
+  if (loading) {
+    return <div className="loading" style={{ padding: 24, textAlign: 'center' }}>Checking Docker status...</div>;
+  }
+
+  if (!status.installed || !status.running) {
+    return (
+      <div className="card" style={{ padding: 24, maxWidth: 650, margin: '20px auto' }}>
+        <h2 style={{ display: 'flex', alignItems: 'center', gap: 10, margin: '0 0 12px 0', color: 'var(--text-1)' }}>
+          <span style={{ fontSize: '24px' }}>🐳</span> Docker Management
+        </h2>
+        
+        {!status.installed ? (
+          <>
+            <p className="muted" style={{ lineHeight: 1.5, marginBottom: 20 }}>
+              Docker was not detected on this system. You can install it directly from here using the standard convenience script.
+            </p>
+            {installing ? (
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+                  <span className="spinner" />
+                  <strong>Installing Docker... Please do not close this page.</strong>
+                </div>
+                <pre style={{
+                  background: 'var(--surface-3)',
+                  border: '1px solid var(--line)',
+                  padding: 12,
+                  borderRadius: 6,
+                  maxHeight: 250,
+                  overflowY: 'auto',
+                  fontFamily: 'monospace',
+                  fontSize: '11px',
+                  color: 'var(--text-2)',
+                  whiteSpace: 'pre-wrap',
+                  textAlign: 'left'
+                }}>
+                  {logs.join('')}
+                </pre>
+              </div>
+            ) : (
+              <button className="btn-accent" onClick={handleInstall}>
+                Install Docker
+              </button>
+            )}
+          </>
+        ) : (
+          <>
+            <p className="muted" style={{ lineHeight: 1.5, marginBottom: 20 }}>
+              Docker is installed but the Docker daemon is not running or the current user doesn't have permissions to access it.
+            </p>
+            <div style={{ display: 'flex', gap: 10 }}>
+              <button className="btn-accent" onClick={checkStatus}>
+                ↻ Refresh Status
+              </button>
+            </div>
+          </>
+        )}
+      </div>
+    );
+  }
+
   return (
     <div>
-      <div style={{ display: 'flex', gap: 4, marginBottom: 16 }}>
-        {[{ id: 'images', label: '◈ Images' }, { id: 'stacks', label: '◰ Stacks' }].map(s => (
+      <div style={{ display: 'flex', gap: 4, marginBottom: 16, overflowX: 'auto', paddingBottom: 4 }}>
+        {[
+          { id: 'containers', label: '🗲 Containers' },
+          { id: 'images', label: '◈ Images' },
+          { id: 'stacks', label: '◰ Stacks' }
+        ].map(s => (
           <button
             key={s.id}
             className={`tab-pill ${sub === s.id ? 'is-active' : ''}`}
@@ -73,7 +199,9 @@ function DockerTab() {
           >{s.label}</button>
         ))}
       </div>
-      {sub === 'images' ? <DockerImagesTab /> : <StacksTab />}
+      {sub === 'containers' && <DockerContainersTab />}
+      {sub === 'images' && <DockerImagesTab />}
+      {sub === 'stacks' && <StacksTab />}
     </div>
   );
 }
@@ -85,6 +213,52 @@ function Shell() {
   const [powerOpen, setPowerOpen] = useState(false);
   const [globalSearch, setGlobalSearch] = useState('');
   const [paletteOpen, setPaletteOpen] = useState(false);
+
+  // Mobile swipe gestures
+  const touchStartX = useRef(0);
+  const touchStartY = useRef(0);
+
+  const handleTouchStart = (e) => {
+    touchStartX.current = e.touches[0].clientX;
+    touchStartY.current = e.touches[0].clientY;
+  };
+
+  const handleTouchEnd = (e) => {
+    const diffX = e.changedTouches[0].clientX - touchStartX.current;
+    const diffY = e.changedTouches[0].clientY - touchStartY.current;
+
+    // Detect horizontal swipes, avoiding conflicts with vertical scroll
+    if (Math.abs(diffX) > 70 && Math.abs(diffY) < 50) {
+      const target = e.target;
+      // Do not trigger tab changes when swiping in interactive or terminal areas
+      if (
+        target.closest('.xterm-rows') ||
+        target.closest('.xterm') ||
+        target.closest('.term-display') ||
+        target.closest('.ws-root') ||
+        target.closest('.fb-list') ||
+        target.closest('input') ||
+        target.closest('textarea') ||
+        target.closest('select') ||
+        target.closest('.aj-output-pre')
+      ) {
+        return;
+      }
+
+      const currentIndex = TABS.findIndex(tab => tab.id === activeTab);
+      if (diffX < 0) {
+        // Swipe Left: Next Page
+        if (currentIndex < TABS.length - 1) {
+          setActiveTab(TABS[currentIndex + 1].id);
+        }
+      } else {
+        // Swipe Right: Previous Page
+        if (currentIndex > 0) {
+          setActiveTab(TABS[currentIndex - 1].id);
+        }
+      }
+    }
+  };
 
   // Live data states for badge counts
   const [hostName, setHostName] = useState('server');
@@ -145,7 +319,7 @@ function Shell() {
     return () => clearInterval(interval);
   }, []);
 
-  // Apply theme + accent vars
+  // Apply theme + accent + wallpaper vars
   useEffect(() => {
     const root = document.documentElement;
     const a = ACCENT_PRESETS[t.accent] || ACCENT_PRESETS['#a78bfa'];
@@ -154,7 +328,8 @@ function Shell() {
     root.style.setProperty('--accent-l', a.l);
     root.dataset.theme = t.theme;
     root.dataset.density = t.density;
-  }, [t.accent, t.theme, t.density]);
+    root.dataset.wallpaper = (t.wallpaper && t.wallpaper !== 'none') ? 'true' : 'false';
+  }, [t.accent, t.theme, t.density, t.wallpaper]);
 
   // Close power menu on outside click
   useEffect(() => {
@@ -204,9 +379,9 @@ function Shell() {
       case 'agents':   return <AgentsTab />;
       case 'samba':    return <SambaTab />;
       case 'files':    return <FilesTab />;
+      case 'envfiles': return <EnvManagerTab />;
       case 'ssh':      return <SSHTab />;
-      case 'jobs':     return <AgentJobsTab />;
-      case 'usage':    return <CLIUsageTab />;
+      case 'lan':      return <LANScannerTab />;
       default: return null;
     }
   };
@@ -214,12 +389,21 @@ function Shell() {
   const tabDef = TABS.find(x => x.id === activeTab);
   const openTerminal = () => window.SESS.launch({ type: 'shell', title: 'shell · 1', glyph: '›_' });
 
+  const wpUrl = t.wallpaper === 'custom' ? t.customWallpaperUrl : WALLPAPERS[t.wallpaper];
+  const wpStyle = wpUrl ? {
+    backgroundImage: `url(${wpUrl})`,
+    filter: `blur(${t.wallpaperBlur || 0}px)`
+  } : null;
+
   return (
     <div
       className="shell v-b"
       data-nav={t.nav}
       data-collapsed={collapsed && t.nav === 'sidebar'}
+      onTouchStart={handleTouchStart}
+      onTouchEnd={handleTouchEnd}
     >
+      {wpUrl && <div className="shell-wallpaper" style={wpStyle} />}
       {t.nav === 'sidebar' && (
         <aside className="shell-sidebar">
           <div className="brand">
@@ -331,18 +515,17 @@ function Shell() {
         ))}
       </nav>
 
-      <main className={`shell-main${['code','jobs'].includes(activeTab) ? ' shell-main--fullscreen' : ''}`}>
-        {!['code','jobs'].includes(activeTab) && (
+      <main className={`shell-main${activeTab === 'code' ? ' shell-main--fullscreen' : ''}`}>
+        {activeTab !== 'code' && (
           <div className="page-head">
             <h1>{tabDef?.label}</h1>
             <span className="page-sub">{pageSub(activeTab, hostName, hostUptime, updateCount)}</span>
           </div>
         )}
-        {!['code','jobs'].includes(activeTab) && <ErrorBoundary>{renderTab()}</ErrorBoundary>}
+        {activeTab !== 'code' && <ErrorBoundary>{renderTab()}</ErrorBoundary>}
         <div style={{ display: activeTab === 'code' ? 'contents' : 'none' }}>
-          <CodeWorkspaceTab isVisible={activeTab === 'code'} />
+          <CodeHubTab isVisible={activeTab === 'code'} />
         </div>
-        {activeTab === 'jobs' && <ErrorBoundary><AgentJobsTab /></ErrorBoundary>}
       </main>
 
       {paletteOpen && (
@@ -390,6 +573,32 @@ function Shell() {
           onChange={(v) => setTweak('accent', v)}
         />
 
+        <TweakSection label="Wallpaper" />
+        <TweakRadio
+          label="Background"
+          value={t.wallpaper || 'none'}
+          options={['none', 'cosmic', 'sunset', 'cyber', 'custom']}
+          onChange={(v) => setTweak('wallpaper', v)}
+        />
+        {t.wallpaper === 'custom' && (
+          <TweakText
+            label="Image URL"
+            value={t.customWallpaperUrl || ''}
+            placeholder="https://example.com/image.jpg"
+            onChange={(v) => setTweak('customWallpaperUrl', v)}
+          />
+        )}
+        {t.wallpaper !== 'none' && (
+          <TweakSlider
+            label="Blur amount"
+            value={t.wallpaperBlur || 0}
+            min={0}
+            max={20}
+            unit="px"
+            onChange={(v) => setTweak('wallpaperBlur', v)}
+          />
+        )}
+
         <TweakSection label="Alerts" />
         <AlertThresholds />
 
@@ -404,7 +613,7 @@ function Shell() {
 function pageSub(tab, hostName, hostUptime, updateCount) {
   switch (tab) {
     case 'overview': return `${hostName} · up ${hostUptime || '—'} · live stats`;
-    case 'system':   return `${updateCount > 0 ? `${updateCount} updates · ` : ''}processes, logs, network, units, cron`;
+    case 'system':   return `${updateCount > 0 ? `${updateCount} updates · ` : ''}processes, packages, metrics, logs, network, units, cron`;
     case 'web':      return `Auto-discovered web UIs and manually added services`;
     case 'backend':  return `Internal TCP/UDP services bound to ports`;
     case 'docker':   return `Local Docker images and Compose stacks`;
@@ -412,7 +621,8 @@ function pageSub(tab, hostName, hostUptime, updateCount) {
     case 'samba':    return `Shares, users, connections and service control`;
     case 'files':    return `Browse, edit, copy, move and manage files`;
     case 'ssh':      return `Saved SSH connections, keys, and known_hosts`;
-    case 'usage':    return `Claude Code & agy usage monitoring`;
+    case 'lan':      return `Discover and inspect devices on the local network`;
+    case 'envfiles': return `Browse and edit .env files across projects`;
     default: return '';
   }
 }
