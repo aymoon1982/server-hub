@@ -460,24 +460,61 @@
 .aj-jobs-scroll::-webkit-scrollbar-thumb, .aj-detail::-webkit-scrollbar-thumb,
 .aj-form-body::-webkit-scrollbar-thumb, .aj-right-pane::-webkit-scrollbar-thumb { background: var(--line); border-radius: 3px; }
 
-/* Mobile Adaptations */
+/* Hide the back chevron on desktop (master + detail shown side by side) */
+.aj-back-btn { display: none; }
+
+/* Mobile Adaptations — master/detail navigation (list ⇄ full-screen detail) */
 @media (max-width: 768px) {
   .aj-root {
     flex-direction: column;
-    overflow-y: auto;
+    overflow: hidden;
+    position: relative;
   }
+  /* Default: show the list full-width, detail hidden */
   .aj-list-pane {
     width: 100%;
     min-width: 0;
     border-right: 0;
-    border-bottom: 1px solid var(--line);
-    flex-shrink: 0;
+    flex: 1;
     height: auto;
+    min-height: 0;
   }
   .aj-right-pane {
+    display: none;
     width: 100%;
     min-width: 0;
   }
+  /* A job is selected → swap to the detail view, hide the list */
+  .aj-root.has-selection .aj-list-pane { display: none; }
+  .aj-root.has-selection .aj-right-pane {
+    display: flex;
+    flex: 1;
+    min-height: 0;
+  }
+
+  /* Back chevron — only meaningful on the stacked mobile layout */
+  .aj-back-btn {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 36px;
+    height: 36px;
+    flex-shrink: 0;
+    border: 1px solid var(--line);
+    border-radius: 9px;
+    background: var(--surface-2);
+    color: var(--text-1);
+    font-size: 22px;
+    line-height: 1;
+    cursor: pointer;
+    margin-right: 4px;
+  }
+  .aj-back-btn:active { background: var(--accent-soft); border-color: var(--accent); }
+
+  /* Comfortable tap targets for list controls */
+  .aj-new-btn { min-height: 38px; padding: 0 14px; }
+  .aj-filter-btn { min-height: 34px; }
+
   .aj-modal-dialog {
     max-width: calc(100vw - 32px);
   }

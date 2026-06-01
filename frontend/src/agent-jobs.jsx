@@ -555,7 +555,7 @@ function JobCard({ job, isSelected, agents, workspaces, onClick }) {
 }
 
 // ─── Job detail (right pane) ──────────────────────────────────────────────────
-function JobDetail({ job, agents, workspaces, tz, onEdit, onRun, onCancel, onToggle, onDelete, onClone, onOpenTerminal }) {
+function JobDetail({ job, agents, workspaces, tz, onBack, onEdit, onRun, onCancel, onToggle, onDelete, onClone, onOpenTerminal }) {
   const agent = agents.find(a => a.id === job.agentId);
   const ws = workspaces.find(w => w.id === job.workspaceId);
   const isRunning = job.isRunning;
@@ -566,6 +566,7 @@ function JobDetail({ job, agents, workspaces, tz, onEdit, onRun, onCancel, onTog
   return (
     <div className="aj-detail">
       <div className="aj-detail-header">
+        {onBack && <button className="aj-back-btn" onClick={onBack} aria-label="Back to jobs">‹</button>}
         <span className="aj-detail-glyph">{glyph}</span>
         <div className="aj-detail-title-block">
           <h2 className="aj-detail-name">{job.name}</h2>
@@ -1045,7 +1046,7 @@ export function AgentJobsPanel({ workspaces, agents, activeWsId, onWorkspacesCha
 
   return (
     <>
-      <div className="aj-root">
+      <div className={`aj-root${selectedJob ? ' has-selection' : ''}`}>
         {/* Left: job list */}
         <div className="aj-list-pane">
           <div className="aj-list-header">
@@ -1099,6 +1100,7 @@ export function AgentJobsPanel({ workspaces, agents, activeWsId, onWorkspacesCha
               agents={agents}
               workspaces={workspaces}
               tz={tz}
+              onBack={() => setSelectedId(null)}
               onEdit={() => { setEditJob(selectedJob); setShowForm(true); }}
               onRun={() => handleRun(selectedJob.id)}
               onCancel={() => handleCancel(selectedJob.id)}

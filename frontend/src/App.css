@@ -2159,7 +2159,7 @@ input, textarea, select { font-family: inherit; font-size: inherit; color: var(-
   .shell[data-nav="sidebar"],
   .shell[data-nav="topbar"] {
     grid-template-columns: 1fr;
-    grid-template-rows: 48px 1fr 50px;
+    grid-template-rows: 48px 1fr calc(58px + env(safe-area-inset-bottom, 0px));
     grid-template-areas:
       "topbar"
       "main"
@@ -2168,25 +2168,64 @@ input, textarea, select { font-family: inherit; font-size: inherit; color: var(-
   .shell-sidebar { display: none !important; }
   .shell-tabs--sidebar-hidden { display: flex; }
 
-  /* Bottom tab bar — ONLY horizontal scroll allowed on the page */
+  /* Bottom tab bar — native-style icon + label nav (horizontal scroll) */
   .shell-tabs {
     overflow-x: auto;
     -webkit-overflow-scrolling: touch;
     scrollbar-width: none;
     flex-wrap: nowrap;
-    padding: 0 8px;
+    gap: 0;
+    padding: 0 4px env(safe-area-inset-bottom, 0px);
     border-top: 1px solid var(--line);
     border-bottom: none;
     background: var(--bg-2);
-    align-items: center;
+    align-items: stretch;
   }
   .shell-tabs::-webkit-scrollbar { display: none; }
-  .shell-tabs .tab-pill { padding: 8px 10px; font-size: 12px; flex-shrink: 0; }
-  .shell-tabs .tab-pill .nav-glyph { display: none; }
+  .shell-tabs .tab-pill {
+    flex-direction: column;
+    justify-content: center;
+    gap: 3px;
+    flex-shrink: 0;
+    min-width: 60px;
+    padding: 7px 10px 5px;
+    font-size: 10px;
+    line-height: 1.1;
+    border-radius: 0;
+    color: var(--text-3);
+    position: relative;
+  }
+  .shell-tabs .tab-pill .nav-glyph {
+    display: grid;
+    width: 24px;
+    height: 24px;
+    font-size: 18px;
+  }
+  .shell-tabs .tab-pill.is-active { color: var(--accent); font-weight: 600; background: transparent; }
+  .shell-tabs .tab-pill.is-active .nav-glyph { color: var(--accent); }
+  /* Color is the active indicator — drop the sliding bar */
+  .shell-tabs .tab-pill.is-active::after { display: none; }
   .shell-tabs-sep { display: none; }
-  .shell-tabs .tab-pill.is-active::after {
-    bottom: auto;
-    top: 0;
+  /* Count becomes a small badge pinned to the icon's top-right */
+  .shell-tabs .tab-pill .nav-count {
+    position: absolute;
+    top: 2px;
+    left: 50%;
+    margin-left: 4px;
+    min-width: 15px;
+    padding: 0 4px;
+    height: 15px;
+    line-height: 15px;
+    font-size: 9px;
+    text-align: center;
+    border-radius: 8px;
+    background: var(--accent);
+    color: var(--accent-ink);
+    border: 0;
+  }
+  .shell-tabs .tab-pill .nav-count.is-badge {
+    background: var(--err);
+    color: #fff;
   }
 
   /* Compact top bar */
@@ -2694,17 +2733,17 @@ input, textarea, select { font-family: inherit; font-size: inherit; color: var(-
     overflow-x: hidden !important;
   }
 
-  /* ── Agent Jobs — stack panes, hide sidebar by default ────────────── */
-  .aj-root { flex-direction: column !important; height: auto !important; min-height: 100vh; }
+  /* ── Agent Jobs — master/detail (see agent-jobs.css for the swap) ──── */
+  /* Fill the section exactly so the detail can scroll internally instead of
+     growing the whole page. The list ⇄ detail swap lives in agent-jobs.css. */
+  .aj-root { flex-direction: column !important; height: 100% !important; min-height: 0 !important; }
   .aj-list-pane {
     width: 100% !important;
     min-width: 0 !important;
     max-width: 100% !important;
     border-right: 0 !important;
-    border-bottom: 1px solid rgba(255,255,255,0.06);
   }
-  .aj-detail-pane,
-  .aj-empty-state { width: 100% !important; min-width: 0 !important; }
+  .aj-right-pane { width: 100% !important; min-width: 0 !important; }
   .aj-modal-dialog {
     width: 100% !important;
     max-width: calc(100vw - 24px) !important;
@@ -2797,10 +2836,15 @@ input, textarea, select { font-family: inherit; font-size: inherit; color: var(-
   .toast { grid-template-columns: 22px 1fr auto; }
   .toast-action { display: none; }
 
-  /* Session overlay */
-  .sess-head { flex-wrap: nowrap; }
-  .sess-tab { padding: 0 10px; font-size: 11px; max-width: 180px; }
+  /* Session overlay — taller header for comfortable touch targets */
+  .sess-overlay { grid-template-rows: calc(50px + env(safe-area-inset-top, 0px)) 1fr; }
+  .sess-head { flex-wrap: nowrap; padding-top: env(safe-area-inset-top, 0px); }
+  .sess-tab { padding: 0 12px; font-size: 12px; max-width: 200px; gap: 7px; }
   .sess-tab-sub { display: none; }
+  .sess-tab-x { width: 24px; height: 24px; font-size: 15px; }
+  .sess-tab-add { padding: 0 14px; }
+  .sess-host { display: none; }            /* hostname eats width on phones */
+  .sess-ctrl-btn { width: 36px; height: 36px; font-size: 16px; }
   .agent-input { padding: 10px 12px 14px; grid-template-columns: 16px 1fr auto; gap: 6px; }
   .agent-msg-user { padding-left: 0; }
   .agent-msg { max-width: 100%; }

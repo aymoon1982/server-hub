@@ -218,6 +218,13 @@ function Shell() {
   const touchStartX = useRef(0);
   const touchStartY = useRef(0);
 
+  // Keep the active pill visible in the scrollable mobile bottom nav
+  const tabsNavRef = useRef(null);
+  useEffect(() => {
+    const el = tabsNavRef.current?.querySelector('.tab-pill.is-active');
+    el?.scrollIntoView({ behavior: 'smooth', inline: 'center', block: 'nearest' });
+  }, [activeTab]);
+
   const handleTouchStart = (e) => {
     touchStartX.current = e.touches[0].clientX;
     touchStartY.current = e.touches[0].clientY;
@@ -357,16 +364,17 @@ function Shell() {
     return () => window.removeEventListener('keydown', onKey);
   }, []);
 
+  const num = (n) => (n > 0 ? n.toString() : '');
   const counts = {
     overview: '',
     system:  updateCount > 0 ? updateCount.toString() : '',
-    web:     webCount.toString(),
-    backend: backendCount.toString(),
+    web:     num(webCount),
+    backend: num(backendCount),
     docker:  '',
-    agents:  agentCount.toString() || '6',
-    samba:   sambaCount.toString(),
+    agents:  num(agentCount),
+    samba:   num(sambaCount),
     files:   '',
-    ssh:     sshCount.toString(),
+    ssh:     num(sshCount),
   };
 
   const renderTab = () => {
@@ -496,7 +504,7 @@ function Shell() {
         </div>
       </header>
 
-      <nav className={`shell-tabs${t.nav === 'sidebar' ? ' shell-tabs--sidebar-hidden' : ''}`}>
+      <nav ref={tabsNavRef} className={`shell-tabs${t.nav === 'sidebar' ? ' shell-tabs--sidebar-hidden' : ''}`}>
         {SECTIONS.map((sec, si) => (
           <React.Fragment key={sec.id}>
             {si > 0 && <span className="shell-tabs-sep" />}
