@@ -4,6 +4,7 @@ import { Terminal as XTermTerminal } from '@xterm/xterm';
 import { FitAddon } from '@xterm/addon-fit';
 import { WebLinksAddon } from '@xterm/addon-web-links';
 import '@xterm/xterm/css/xterm.css';
+import { TerminalKeyBar } from './term-keybar.jsx';
 
 const SessionsCtx = createContext(null);
 
@@ -190,11 +191,25 @@ function RealTerminalPane({ session, active }) {
   const termRef = useRef(null);
   const fitRef = useRef(null);
   const wsRef = useRef(null);
+  const ctrlRef = useRef(false);
+  const [ctrlOn, setCtrlOn] = useState(false);
   const { setSessions, fullscreen } = useSessions();
 
   const updateStatus = useCallback((status) => {
     setSessions(arr => arr.map(s => s.id === session.id ? { ...s, status } : s));
   }, [session.id, setSessions]);
+
+  const sendSeq = useCallback((seq) => {
+    const ws = wsRef.current;
+    if (ws && ws.readyState === WebSocket.OPEN) ws.send(seq);
+    try { termRef.current?.focus(); } catch {}
+  }, []);
+
+  const toggleCtrl = useCallback(() => {
+    ctrlRef.current = !ctrlRef.current;
+    setCtrlOn(ctrlRef.current);
+    try { termRef.current?.focus(); } catch {}
+  }, []);
 
   useEffect(() => {
     if (!hostRef.current) return;
@@ -285,7 +300,16 @@ function RealTerminalPane({ session, active }) {
     };
 
     term.onData((d) => {
-      if (ws.readyState === WebSocket.OPEN) ws.send(d);
+      let data = d;
+      // Sticky Ctrl from the mobile key bar (a → ^A, c → ^C, …)
+      if (ctrlRef.current && data.length === 1) {
+        const c = data.charCodeAt(0);
+        if (c >= 97 && c <= 122)      data = String.fromCharCode(c - 96);
+        else if (c >= 64 && c <= 95)  data = String.fromCharCode(c - 64);
+        ctrlRef.current = false;
+        setCtrlOn(false);
+      }
+      if (ws.readyState === WebSocket.OPEN) ws.send(data);
     });
 
     term.onResize(({ cols, rows }) => {
@@ -319,8 +343,9 @@ function RealTerminalPane({ session, active }) {
   }, [active, fullscreen]);
 
   return (
-    <div className={`sh-pane mono`} style={{ display: active ? 'block' : 'none', height: '100%', width: '100%', padding: '8px', background: '#0a0a0a' }}>
-      <div ref={hostRef} className="terminal-body" style={{ height: '100%', width: '100%' }} />
+    <div className={`sh-pane mono`} style={{ display: active ? 'flex' : 'none', flexDirection: 'column', height: '100%', width: '100%', padding: 0, background: '#0a0a0a' }}>
+      <div ref={hostRef} className="terminal-body" style={{ flex: 1, minHeight: 0, width: '100%', padding: '8px' }} />
+      <TerminalKeyBar onKey={sendSeq} ctrlOn={ctrlOn} onToggleCtrl={toggleCtrl} />
     </div>
   );
 }

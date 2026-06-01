@@ -5,6 +5,7 @@ import { Terminal } from '@xterm/xterm';
 import { FitAddon } from '@xterm/addon-fit';
 import { WebLinksAddon } from '@xterm/addon-web-links';
 import '@xterm/xterm/css/xterm.css';
+import { TerminalKeyBar } from './term-keybar.jsx';
 
 const ENV_PASSTHROUGH_DEFAULT = [
   'ANTHROPIC_API_KEY', 'OPENAI_API_KEY', 'GEMINI_API_KEY', 'GOOGLE_API_KEY',
@@ -36,8 +37,24 @@ export function TerminalPane({ id, cwd, agent, envCsv, active, onTitle, onRegist
   const mountedRef = useRef(true);
   const sessionIdRef = useRef(sessionId || null);
   const reconnectTimer = useRef(null);
+  // Sticky Ctrl modifier for the mobile key bar
+  const ctrlRef = useRef(false);
+  const [ctrlOn, setCtrlOn] = useState(false);
 
   useEffect(() => () => { mountedRef.current = false; }, []);
+
+  // Send a raw byte sequence to the PTY (used by the mobile key bar)
+  const sendSeq = useCallback((seq) => {
+    const ws = wsRef.current;
+    if (ws && ws.readyState === WebSocket.OPEN) ws.send(seq);
+    try { termRef.current?.focus(); } catch {}
+  }, []);
+
+  const toggleCtrl = useCallback(() => {
+    ctrlRef.current = !ctrlRef.current;
+    setCtrlOn(ctrlRef.current);
+    try { termRef.current?.focus(); } catch {}
+  }, []);
 
   useLayoutEffect(() => {
     if (!containerRef.current || termRef.current) return;
@@ -121,7 +138,19 @@ export function TerminalPane({ id, cwd, agent, envCsv, active, onTitle, onRegist
           try { term.write('\r\n\x1b[33m[disconnected]\x1b[0m\r\n'); } catch {}
         }
       };
-      term.onData((d) => { if (ws.readyState === ws.OPEN) ws.send(d); });
+      term.onData((d) => {
+        let data = d;
+        // Sticky Ctrl from the mobile key bar: fold the next single char into
+        // its control code (a → ^A, c → ^C, etc.), then release the modifier.
+        if (ctrlRef.current && data.length === 1) {
+          const c = data.charCodeAt(0);
+          if (c >= 97 && c <= 122)      data = String.fromCharCode(c - 96); // a-z
+          else if (c >= 64 && c <= 95)  data = String.fromCharCode(c - 64); // @,A-Z,[\]^_
+          ctrlRef.current = false;
+          setCtrlOn(false);
+        }
+        if (ws.readyState === ws.OPEN) ws.send(data);
+      });
 
       return ws;
     };
@@ -176,9 +205,12 @@ export function TerminalPane({ id, cwd, agent, envCsv, active, onTitle, onRegist
 
   return (
     <div
-      ref={containerRef}
-      style={{ display: active ? 'block' : 'none', width: '100%', height: '100%', background: '#08080c' }}
-    />
+      className="tp-wrap"
+      style={{ display: active ? 'flex' : 'none', flexDirection: 'column', width: '100%', height: '100%', background: '#08080c' }}
+    >
+      <div ref={containerRef} className="tp-term-host" style={{ flex: 1, minHeight: 0, width: '100%' }} />
+      <TerminalKeyBar onKey={sendSeq} ctrlOn={ctrlOn} onToggleCtrl={toggleCtrl} />
+    </div>
   );
 }
 

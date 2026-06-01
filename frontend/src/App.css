@@ -2048,6 +2048,51 @@ input, textarea, select { font-family: inherit; font-size: inherit; color: var(-
 }
 
 /* ──────────────────────────────────────────────────────────────────────────
+   Terminal mobile key accessory bar
+   Hidden on desktop; revealed ≤768px (see mobile block below). Gives touch
+   users the keys a soft keyboard can't: Esc / Tab / Ctrl / arrows / symbols.
+   ────────────────────────────────────────────────────────────────────────── */
+.term-keybar {
+  display: none;
+  align-items: center;
+  gap: 5px;
+  flex-shrink: 0;
+  padding: 6px 8px;
+  background: oklch(0.17 0.012 280);
+  border-top: 1px solid var(--line);
+  overflow-x: auto;
+  -webkit-overflow-scrolling: touch;
+  scrollbar-width: none;
+  touch-action: pan-x;
+}
+.term-keybar::-webkit-scrollbar { display: none; }
+.tkb-key {
+  flex: 0 0 auto;
+  min-width: 40px;
+  height: 38px;
+  padding: 0 11px;
+  border-radius: 9px;
+  border: 1px solid var(--line-2);
+  background: var(--surface-2);
+  color: var(--text-1);
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 15px;
+  font-weight: 600;
+  line-height: 1;
+  cursor: pointer;
+  -webkit-user-select: none;
+  user-select: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  transition: background 0.1s, transform 0.06s;
+}
+.tkb-key--wide { font-size: 13px; }
+.tkb-key:active { background: var(--accent-soft); border-color: var(--accent); transform: scale(0.94); }
+.tkb-mod.is-on { background: var(--accent); color: var(--accent-ink); border-color: var(--accent); }
+.tkb-sep { flex: 0 0 auto; width: 1px; height: 22px; background: var(--line-2); margin: 0 3px; }
+
+/* ──────────────────────────────────────────────────────────────────────────
    Mobile / Responsive  —  v4 (zero horizontal scroll, card layouts)
    Breakpoints: ≤768px = mobile, 769–1024px = tablet
    Rule: NO horizontal scrolling anywhere in tab content. Only the top
@@ -2677,20 +2722,40 @@ input, textarea, select { font-family: inherit; font-size: inherit; color: var(-
   }
   .ajwp-list { max-height: 220px; }
 
-  /* ── Code workspace — toolbar wrapping ────────────────────────────── */
+  /* ── Code workspace — compact, app-like bottom toolbar ────────────── */
   .ws-toolbar {
     flex-wrap: wrap !important;
     height: auto !important;
     min-height: 56px !important;
     padding: 8px !important;
-    gap: 4px !important;
+    gap: 6px !important;
+    align-items: stretch !important;
+    /* Sit above the bottom shell-tabs and respect the home-bar inset */
+    padding-bottom: calc(8px + env(safe-area-inset-bottom, 0px)) !important;
   }
+  /* Workspace + agent pickers share the top row, each taking half */
+  .ws-toolbar .ws-tb-section { flex: 1 1 0 !important; min-width: 0 !important; }
   .ws-tb-btn {
+    width: 100% !important;
     max-width: 100% !important;
     min-width: 0 !important;
     flex-shrink: 1;
+    height: 42px !important;
+    justify-content: flex-start;
   }
-  .ws-tb-label { max-width: 100px !important; }
+  .ws-tb-label { flex: 1; max-width: none !important; text-align: left; }
+  /* The thin divider between pickers adds noise on a stacked layout */
+  .ws-tb-divider { display: none !important; }
+  /* Schedule Job lives on its own tab — keep the mobile toolbar focused */
+  .hub-schedule-btn { display: none !important; }
+  /* Launch spans the full width as the primary action */
+  .ws-launch-btn {
+    flex: 1 1 100% !important;
+    width: 100% !important;
+    height: 46px !important;
+    font-size: 15px !important;
+    order: 9 !important;
+  }
   .ws-popover {
     min-width: 0 !important;
     max-width: calc(100vw - 24px) !important;
@@ -2698,6 +2763,14 @@ input, textarea, select { font-family: inherit; font-size: inherit; color: var(-
     left: 8px !important;
   }
   .empty-body, .qs-grid { max-width: 100% !important; }
+
+  /* Terminal tabs — larger touch targets, easier close */
+  .term-tabs { min-height: 44px; }
+  .term-tab { height: 44px; padding: 0 14px; font-size: 13px; }
+  .term-tab-x { font-size: 18px; padding: 4px 6px; }
+
+  /* Reveal the on-screen terminal key bar on touch layouts */
+  .term-keybar { display: flex; }
   .fb-dialog {
     width: 100% !important;
     max-width: calc(100vw - 16px) !important;
@@ -2900,7 +2973,24 @@ input, textarea, select { font-family: inherit; font-size: inherit; color: var(-
     flex-wrap: nowrap;
   }
   .hub-nav::-webkit-scrollbar { display: none; }
-  .hub-tab { flex-shrink: 0; }
+  .hub-tab { flex-shrink: 0; min-height: 42px; padding: 8px 16px; font-size: 14px; }
+  /* Workspace/agent context label competes for room with the tabs — drop it */
+  .hub-nav > span[style] { display: none !important; }
+
+  /* Empty-state quick-start — bigger, thumb-friendly agent buttons in a grid */
+  .term-empty { padding: 24px 16px 28px; }
+  .qs-grid {
+    display: grid !important;
+    grid-template-columns: 1fr 1fr;
+    gap: 8px;
+    width: 100%;
+  }
+  .qs-btn {
+    justify-content: center;
+    min-height: 48px;
+    font-size: 13.5px;
+    border-radius: 10px;
+  }
   /* On mobile the shell uses a 48px topbar / 1fr main / 50px bottom-tabs grid.
      Let hub-root and ws-root fill the main area exactly so the in-hub bottom
      toolbar (ws-toolbar) doesn't slide under the bottom shell-tabs. */
