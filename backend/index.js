@@ -1,5 +1,5 @@
 const express = require('express');
-const { exec, execFile, spawn } = require('child_process');
+const { exec, execFile, spawn, execSync } = require('child_process');
 const axios = require('axios');
 const cors = require('cors');
 const path = require('path');
@@ -116,9 +116,9 @@ const NON_HTTP_PORTS = new Set([
     22, 25, 53, 110, 143, 445, 465, 587, 993, 995,
     1433, 1521, 3306, 5432, 6379, 9092, 11211, 27017, 27018, 27019,
 ]);
-const GENERIC_EXEC_NAMES = ['node', 'python', 'python3', 'MainThread', 'node-MainThread', 'deno', 'bun'];
+const GENERIC_EXEC_NAMES = ['node', 'python', 'python3', 'MainThread', 'node-MainThread', 'deno', 'bun', 'next-server'];
 const GENERIC_SCRIPT_NAMES = new Set(['index', 'main', 'server', 'app', 'run', 'start', 'cli']);
-const SKIP_PATH_PARTS = new Set(['.', '..', 'src', 'dist', 'bin', '.bin', 'backend', 'frontend', 'node_modules', 'lib', '.local']);
+const SKIP_PATH_PARTS = new Set(['.', '..', 'src', 'dist', 'bin', '.bin', 'backend', 'frontend', 'node_modules', 'lib', '.local', 'app']);
 const insecureHttpsAgent = new https.Agent({ rejectUnauthorized: false });
 
 const DISCOVERY_TTL_MS = parseInt(process.env.DISCOVERY_TTL_MS || '30000', 10);
@@ -287,8 +287,12 @@ const resolveProcessName = (pid, rawProcessName) => {
             const parts = cmdline.split('\0').filter(Boolean);
             if (parts.length > 0) {
                 const execName = path.basename(parts[0]);
-                const isGeneric = GENERIC_EXEC_NAMES.some(g => rawProcessName.includes(g) || execName.includes(g));
+                const isGeneric = GENERIC_EXEC_NAMES.some(g => rawProcessName.includes(g) || execName.includes(g) || rawProcessName.startsWith('next-server'));
                 if (isGeneric) {
+                    // Specific check for next-server / 9router combination
+                    if (cmdline.includes('9router') || cmdline.includes('next-server')) {
+                        return '9router';
+                    }
                     const scriptArg = parts.slice(1).find(p => !p.startsWith('-'));
                     if (scriptArg) {
                         let bestName = path.basename(scriptArg).replace(/\.[^/.]+$/, '');
@@ -4267,6 +4271,68 @@ function pkgSse(action, packages, req, res) {
 app.post('/api/packages/install', (req, res) => pkgSse('install', req.body?.packages, req, res));
 app.post('/api/packages/remove',  (req, res) => pkgSse('remove',  req.body?.packages, req, res));
 
+// ─── Tmux-backed Terminal Session Store (declared here so API routes below can use it) ───
+const TMUX_PREFIX           = 'sh-';
+const TERM_SESSION_IDLE_TTL = 4 * 60 * 60 * 1000;
+const termSessions          = new Map();
+
+function tmuxRun(...args) {
+    const cmd = TERMINAL_USER === 'root'
+        ? ['tmux', ...args]
+        : ['sudo', '-n', '-u', TERMINAL_USER, '--', 'tmux', ...args];
+    try { execSync(cmd.join(' '), { stdio: 'ignore', timeout: 3000 }); return true; }
+    catch { return false; }
+}
+function tmuxSessionExists(name) { return tmuxRun('has-session', '-t', name); }
+function tmuxKillSession(name)   { tmuxRun('kill-session', '-t', name); }
+
+// Pick up tmux sessions that survived a server restart
+(function restoreOrphanedSessions() {
+    try {
+        const listCmd = TERMINAL_USER === 'root'
+            ? `tmux list-sessions -F '#S' 2>/dev/null`
+            : `sudo -n -u ${TERMINAL_USER} -- tmux list-sessions -F '#S' 2>/dev/null`;
+        const out = execSync(listCmd, { encoding: 'utf8', timeout: 3000 });
+        for (const line of out.split('\n').filter(l => l.startsWith(TMUX_PREFIX))) {
+            const sid = line.slice(TMUX_PREFIX.length);
+            if (sid && !termSessions.has(sid)) {
+                termSessions.set(sid, { tmuxName: line, ws: null, lastActivity: Date.now(), cwd: null, agent: null, created: Date.now() });
+            }
+        }
+        if (termSessions.size > 0)
+            console.log(`[term-sessions] restored ${termSessions.size} orphaned tmux session(s)`);
+    } catch {}
+})();
+
+setInterval(() => {
+    const now = Date.now();
+    for (const [sid, sess] of termSessions) {
+        if (!sess.ws && now - sess.lastActivity > TERM_SESSION_IDLE_TTL) {
+            console.log(`[term-sessions] evicting idle session ${sid}`);
+            tmuxKillSession(sess.tmuxName);
+            termSessions.delete(sid);
+        }
+    }
+}, 15 * 60 * 1000);
+
+// These must live before the SPA catch-all below
+app.get('/api/terminal-sessions', (req, res) => {
+    const list = [];
+    for (const [id, s] of termSessions) {
+        list.push({ id, agent: s.agent, cwd: s.cwd, connected: !!s.ws, created: s.created, lastActivity: s.lastActivity });
+    }
+    res.json({ sessions: list });
+});
+app.delete('/api/terminal-sessions/:sid', (req, res) => {
+    const { sid } = req.params;
+    const sess = termSessions.get(sid);
+    if (!sess) return res.status(404).json({ error: 'Session not found' });
+    try { if (sess.ws) sess.ws.close(); } catch {}
+    tmuxKillSession(sess.tmuxName);
+    termSessions.delete(sid);
+    res.json({ ok: true });
+});
+
 const frontendPath = path.join(__dirname, '../frontend/dist');
 if (fs.existsSync(frontendPath)) {
     app.use(express.static(frontendPath));
@@ -4453,36 +4519,41 @@ wss.on('connection', (ws, req) => {
         return;
     }
 
+    // ── Resolve session ID and decide new vs reconnect ─────────────────────
+    const requestedSid = (query && query.sid) || null;
+    let sid, isReconnect;
+
+    if (requestedSid) {
+        const tmuxName = TMUX_PREFIX + requestedSid;
+        if (tmuxSessionExists(tmuxName)) {
+            // tmux session is still alive — reattach to it
+            sid         = requestedSid;
+            isReconnect = true;
+        } else {
+            // Session died (server restart or idle eviction) — start fresh
+            sid         = crypto.randomBytes(16).toString('hex');
+            isReconnect = false;
+        }
+    } else {
+        sid         = crypto.randomBytes(16).toString('hex');
+        isReconnect = false;
+    }
+
+    const tmuxName = TMUX_PREFIX + sid;
+
+    // ── Common setup: parse params, build env ──────────────────────────────
     let term;
     try {
         const agent = sanitizeAgent(query && query.agent);
-        const cols = Math.min(parseInt(query.cols, 10) || 100, 400);
-        const rows = Math.min(parseInt(query.rows, 10) || 30, 200);
+        const cols  = Math.min(parseInt(query.cols, 10) || 100, 400);
+        const rows  = Math.min(parseInt(query.rows, 10) || 30, 200);
 
-        let command = 'sudo';
-        let args = ['-n', '-u', TERMINAL_USER, '-i'];
-        if (TERMINAL_USER === 'root') {
-            command = 'bash';
-            args = ['-l'];
-        }
-
-        if (query && query.docker) {
-            if (!/^[a-zA-Z0-9][a-zA-Z0-9_.-]{0,63}$/.test(query.docker)) {
-                ws.close(1008, 'Invalid container');
-                return;
-            }
-            command = 'docker';
-            args = ['exec', '-it', query.docker, 'sh'];
-        }
-
-        let spawnCwd = '/';
+        let spawnCwd = process.env.HOME || `/home/${TARGET_USER}`;
         if (typeof query.cwd === 'string' && query.cwd) {
             try {
                 const safe = safeFilePath(query.cwd);
-                if (fs.existsSync(safe) && fs.statSync(safe).isDirectory()) {
-                    spawnCwd = safe;
-                }
-            } catch (e) {}
+                if (fs.existsSync(safe) && fs.statSync(safe).isDirectory()) spawnCwd = safe;
+            } catch {}
         }
 
         const spawnEnv = {
@@ -4492,40 +4563,95 @@ wss.on('connection', (ws, req) => {
             HOME: process.env.HOME || `/home/${TARGET_USER}`,
         };
         if (typeof query.env === 'string' && query.env) {
-            const requested = query.env.split(',').map(s => s.trim()).filter(Boolean);
-            for (const name of requested) {
+            for (const name of query.env.split(',').map(s => s.trim()).filter(Boolean)) {
                 if (!/^[A-Z_][A-Z0-9_]{0,63}$/.test(name)) continue;
                 if (!ALLOWED_ENV_PASSTHROUGH.includes(name)) continue;
                 if (process.env[name] != null) spawnEnv[name] = process.env[name];
             }
         }
 
-        term = pty.spawn(command, args, {
-            name: 'xterm-256color',
-            cols,
-            rows,
-            env: spawnEnv,
-            cwd: spawnCwd,
+        // Docker sessions bypass tmux (containers manage their own lifecycle)
+        if (query && query.docker) {
+            if (!/^[a-zA-Z0-9][a-zA-Z0-9_.-]{0,63}$/.test(query.docker)) {
+                ws.close(1008, 'Invalid container'); return;
+            }
+            term = pty.spawn('docker', ['exec', '-it', query.docker, 'sh'], {
+                name: 'xterm-256color', cols, rows, env: spawnEnv, cwd: '/',
+            });
+            try { ws.send(JSON.stringify({ type: 'session', id: sid })); } catch {}
+            term.onData(data => { if (ws.readyState === ws.OPEN) try { ws.send(Buffer.from(data)); } catch {} });
+            term.onExit(() => { try { ws.close(); } catch {} });
+            ws.on('message', msg => { try { term.write(msg.toString()); } catch {} });
+            ws.on('close', () => { try { term.kill(); } catch {} });
+            return;
+        }
+
+        // ── Spawn the PTY that attaches to our tmux session ────────────────
+        // The outer shell is just a login wrapper so the env is correct for
+        // the user. Once ready, it either creates (new) or attaches (reconnect)
+        // to the named tmux session. The agent lives inside tmux, surviving
+        // any number of browser disconnects and even server restarts.
+        let shellCmd, shellArgs;
+        if (TERMINAL_USER === 'root') {
+            shellCmd  = 'bash';
+            shellArgs = ['-l'];
+        } else {
+            shellCmd  = 'sudo';
+            shellArgs = ['-n', '-u', TERMINAL_USER, '-i'];
+        }
+
+        term = pty.spawn(shellCmd, shellArgs, {
+            name: 'xterm-256color', cols, rows, env: spawnEnv, cwd: spawnCwd,
         });
 
+        // Register session BEFORE sending the session-id message so the
+        // frontend can always reconnect with the id we are about to announce.
+        const existingMeta = termSessions.get(sid);
+        termSessions.set(sid, {
+            tmuxName,
+            ws,
+            lastActivity: Date.now(),
+            cwd:   existingMeta?.cwd   ?? spawnCwd,
+            agent: existingMeta?.agent ?? (agent ? agent.id : null),
+            created: existingMeta?.created ?? Date.now(),
+        });
+
+        try { ws.send(JSON.stringify({ type: 'session', id: sid })); } catch {}
+
+        // Wait for the login shell to be ready, then hook into tmux
         setTimeout(() => {
             try {
-                if (spawnCwd && spawnCwd !== '/') {
-                    term.write(`cd ${shellQuote(spawnCwd)}\n`);
+                if (isReconnect) {
+                    // Attach to the still-running tmux session
+                    term.write(`tmux attach-session -t ${tmuxName}\n`);
+                } else {
+                    // Create a detached tmux session with the right cwd + agent,
+                    // then attach to it. Using -A: attach if already exists (safety).
+                    const agentCmd = agent ? agent.cmd : 'bash';
+                    const cwdFlag  = `-c ${shellQuote(spawnCwd)}`;
+                    term.write(
+                        `tmux new-session -A -d -s ${tmuxName} ${cwdFlag} ${shellQuote(agentCmd)} ` +
+                        `&& tmux attach-session -t ${tmuxName}\n`
+                    );
                 }
-                if (agent) {
-                    term.write(`${agent.cmd}\n`);
-                }
-            } catch (e) {}
-        }, 500);
+            } catch {}
+        }, 600);
 
-        term.onData((data) => {
-            if (ws.readyState === ws.OPEN) ws.send(data);
+        const sess = termSessions.get(sid);
+        term.onData(data => {
+            sess.lastActivity = Date.now();
+            if (sess.ws && sess.ws.readyState === sess.ws.OPEN) {
+                try { sess.ws.send(Buffer.from(data)); } catch {}
+            }
         });
         term.onExit(({ exitCode, signal }) => {
-            if (ws.readyState === ws.OPEN) {
-                ws.send(`\r\n\x1b[33m[process exited code=${exitCode} signal=${signal || 0}]\x1b[0m\r\n`);
-                ws.close();
+            // The PTY shell exited (user typed 'exit' inside tmux, or detached).
+            // Don't remove the session from the Map — the tmux session may still be alive.
+            const s = termSessions.get(sid);
+            if (s && s.ws === ws) {
+                const msg = `\r\n\x1b[33m[shell exited — click ↺ Reconnect to re-attach]\x1b[0m\r\n`;
+                try { s.ws.send(msg); s.ws.close(); } catch {}
+                s.ws = null;
             }
         });
 
@@ -4544,12 +4670,13 @@ wss.on('connection', (ws, req) => {
                     }
                 }
                 term.write(text);
-            } catch (e) {
-                console.error('terminal message error', e);
-            }
+            } catch (e) { console.error('terminal message error', e); }
         });
         ws.on('close', () => {
-            try { term.kill(); } catch (e) {}
+            // Kill the tmux-attach PTY shell, but the tmux session lives on.
+            try { term.kill(); } catch {}
+            const s = termSessions.get(sid);
+            if (s && s.ws === ws) { s.ws = null; s.lastActivity = Date.now(); }
         });
     } catch (e) {
         console.error('terminal spawn failed', e);

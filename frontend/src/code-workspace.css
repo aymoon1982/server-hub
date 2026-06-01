@@ -2,6 +2,7 @@
   display: flex;
   flex-direction: column;
   height: calc(100vh - 56px);
+  height: calc(100dvh - 56px);
   background: var(--bg);
   color: var(--text);
   font-family: var(--font-sans, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif);
@@ -88,11 +89,13 @@
   display: flex;
   flex-direction: column;
   align-items: center;
-  justify-content: center;
-  padding: 40px;
+  justify-content: flex-start;
+  padding: 32px 40px 40px;
   text-align: center;
-  background: radial-gradient(circle at center, var(--accent-soft) 0%, transparent 70%);
+  background: radial-gradient(circle at 50% 20%, var(--accent-soft) 0%, transparent 60%);
+  overflow-y: auto;
 }
+.term-empty .empty-orb { margin-top: 16px; }
 
 .empty-orb {
   width: 72px;
@@ -152,6 +155,121 @@
 }
 
 .qs-btn:disabled { opacity: 0.4; cursor: not-allowed; }
+
+/* ── Session recovery / history blocks ── */
+.sess-recover-block,
+.sess-history-block {
+  width: 100%;
+  max-width: 540px;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  overflow: hidden;
+  margin-bottom: 12px;
+}
+
+.sess-recover-header,
+.sess-history-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 8px 12px;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--text-3);
+  background: var(--bg-2);
+  border-bottom: 1px solid var(--line);
+}
+
+.sess-recover-all {
+  background: none;
+  border: 1px solid var(--accent-line);
+  color: var(--accent);
+  padding: 2px 8px;
+  border-radius: 4px;
+  font-size: 11px;
+  cursor: pointer;
+  transition: background 0.15s;
+}
+.sess-recover-all:hover { background: var(--accent-soft); }
+
+.sess-recover-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--line);
+  transition: background 0.12s;
+}
+.sess-recover-row:last-child { border-bottom: none; }
+.sess-recover-row:hover { background: var(--hover); }
+
+.sess-recover-glyph {
+  font-size: 15px;
+  flex-shrink: 0;
+  width: 20px;
+  text-align: center;
+}
+
+.sess-recover-info {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  text-align: left;
+}
+.sess-recover-title {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.sess-recover-cwd {
+  font-size: 10px;
+  color: var(--text-3);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.sess-history-age {
+  font-size: 10px;
+  color: var(--text-3);
+  flex-shrink: 0;
+  white-space: nowrap;
+}
+
+.sess-recover-btn {
+  background: var(--bg-2);
+  border: 1px solid var(--accent-line);
+  color: var(--accent);
+  padding: 4px 10px;
+  border-radius: 5px;
+  font-size: 11px;
+  font-weight: 500;
+  cursor: pointer;
+  flex-shrink: 0;
+  transition: background 0.15s;
+}
+.sess-recover-btn:hover { background: var(--accent-soft); }
+
+.sess-recover-dismiss {
+  background: none;
+  border: none;
+  color: var(--text-3);
+  font-size: 14px;
+  cursor: pointer;
+  padding: 0 2px;
+  line-height: 1;
+  flex-shrink: 0;
+  opacity: 0.6;
+}
+.sess-recover-dismiss:hover { opacity: 1; color: var(--text); }
 
 /* ── Bottom toolbar ── */
 .ws-toolbar {
@@ -689,6 +807,7 @@
   display: flex;
   flex-direction: column;
   height: calc(100vh - 56px);
+  height: calc(100dvh - 56px);
   overflow: hidden;
   background: var(--bg);
   color: var(--text);

@@ -5,7 +5,9 @@ import { TerminalPane, FolderBrowserModal } from './code-workspace.jsx';
 import { AgentJobsPanel } from './agent-jobs.jsx';
 import { CLIUsageTab } from './cli-usage.jsx';
 
-const ACTIVE_KEY  = 'code_workspace_active_id';
+const ACTIVE_KEY    = 'code_workspace_active_id';
+const SESSIONS_KEY  = 'code_workspace_sessions';
+const HISTORY_KEY   = 'code_workspace_history';
 const ENV_CSV     = [
   'ANTHROPIC_API_KEY','OPENAI_API_KEY','GEMINI_API_KEY','GOOGLE_API_KEY',
   'OPENROUTER_API_KEY','GROQ_API_KEY','XAI_API_KEY','DEEPSEEK_API_KEY',
@@ -17,6 +19,20 @@ const AGENT_GLYPHS = {
   codex: '⬡', opencode: '🔏', kilocode: '⚡', kilo: '⚡',
   ollama: '🦙', shell: '›_', aider: '🤖',
 };
+
+function timeAgo(ts) {
+  const s = Math.floor((Date.now() - ts) / 1000);
+  if (s < 60)    return 'just now';
+  if (s < 3600)  return `${Math.floor(s / 60)}m ago`;
+  if (s < 86400) return `${Math.floor(s / 3600)}h ago`;
+  return `${Math.floor(s / 86400)}d ago`;
+}
+
+function lsRead(key, fallback = []) {
+  try { const v = JSON.parse(localStorage.getItem(key)); return Array.isArray(v) ? v : fallback; }
+  catch { return fallback; }
+}
+function lsWrite(key, val) { try { localStorage.setItem(key, JSON.stringify(val)); } catch {} }
 
 // ─── Hub root ─────────────────────────────────────────────────────────────────
 export function CodeHubTab({ isVisible = true }) {
@@ -35,9 +51,21 @@ export function CodeHubTab({ isVisible = true }) {
   }, []);
 
   // ── Terminal state ─────────────────────────────────────────────────────────
-  const [terminals, setTerminals]   = useState([]);
+  // Sessions are NOT auto-restored on load — they're surfaced as offers in the
+  // empty-state UI so the user can consciously reconnect each one.
+  const [terminals, setTerminals]       = useState([]);
   const [activeTermId, setActiveTermId] = useState(null);
-  const termSeq   = useRef(0);
+  // Sessions from the previous browser visit, offered for reconnection
+  const [savedSessions, setSavedSessions] = useState(() => lsRead(SESSIONS_KEY));
+  // Closed-session history (last 10); only coding agents, not plain shell
+  const [sessionHistory, setSessionHistory] = useState(() => lsRead(HISTORY_KEY));
+  const termSeq = useRef((() => {
+    const all = [...lsRead(SESSIONS_KEY), ...lsRead(HISTORY_KEY)];
+    return all.reduce((m, t) => {
+      const n = parseInt((t.id || '').replace('t', ''), 10);
+      return isNaN(n) ? m : Math.max(m, n);
+    }, 0);
+  })());
   const termFits  = useRef({});
 
   // ── Cross-tab state ────────────────────────────────────────────────────────
@@ -73,11 +101,19 @@ export function CodeHubTab({ isVisible = true }) {
     return () => document.removeEventListener('mousedown', h);
   }, [showWsPop, showAgPop]);
 
-  // Re-fit terminals when tab / sub-tab becomes visible
+  // Re-fit terminals when tab / sub-tab becomes visible.
+  // Use two passes: rAF to let display:block paint, then a 100ms follow-up
+  // to catch any further layout settling (sidebar collapse, etc.).
   useEffect(() => {
-    if (isVisible && sub === 'terminal') {
-      setTimeout(() => Object.values(termFits.current).forEach(fn => { try { fn(); } catch {} }), 50);
-    }
+    if (!(isVisible && sub === 'terminal')) return;
+    const raf = requestAnimationFrame(() => {
+      Object.values(termFits.current).forEach(fn => { try { fn(); } catch {} });
+      const t2 = setTimeout(() => {
+        Object.values(termFits.current).forEach(fn => { try { fn(); } catch {} });
+      }, 100);
+      return () => clearTimeout(t2);
+    });
+    return () => cancelAnimationFrame(raf);
   }, [isVisible, sub]);
 
   // ── Data loading ───────────────────────────────────────────────────────────
@@ -107,6 +143,10 @@ export function CodeHubTab({ isVisible = true }) {
   useEffect(() => { loadData(); }, [loadData]);
 
   // ── Terminal management ────────────────────────────────────────────────────
+  const persistSessions = useCallback((list) => {
+    lsWrite(SESSIONS_KEY, list);
+  }, []);
+
   const launchSession = useCallback((agentId, customCwd) => {
     const targetCwd = customCwd || cwd;
     if (!targetCwd) {
@@ -115,17 +155,76 @@ export function CodeHubTab({ isVisible = true }) {
     }
     const id  = 't' + (++termSeq.current);
     const ag  = agents.find(a => a.id === agentId);
-    setTerminals(prev => [...prev, { id, agent: agentId === 'shell' ? null : agentId, title: ag?.label || 'Shell', cwd: targetCwd }]);
+    const entry = {
+      id, agent: agentId === 'shell' ? null : agentId,
+      title: ag?.label || 'Shell', cwd: targetCwd,
+      workspaceId: activeWsId, sessionId: null,
+    };
+    setTerminals(prev => { const n = [...prev, entry]; persistSessions(n); return n; });
     setActiveTermId(id);
-  }, [cwd, agents]);
+  }, [cwd, agents, activeWsId, persistSessions]);
+
+  // Reconnect a savedSession (from previous browser visit) as a new tab
+  const reconnectSession = useCallback((sess) => {
+    const id = 't' + (++termSeq.current);
+    const entry = { ...sess, id };
+    setTerminals(prev => { const n = [...prev, entry]; persistSessions(n); return n; });
+    setActiveTermId(id);
+    setSavedSessions(prev => {
+      const n = prev.filter(s => s.sessionId !== sess.sessionId);
+      lsWrite(SESSIONS_KEY, n);
+      return n;
+    });
+  }, [persistSessions]);
+
+  // Resume from history — starts a fresh terminal in the same workspace + agent.
+  // Claude Code / other agents will handle their own conversation-level resume.
+  const resumeFromHistory = useCallback((hist) => {
+    if (hist.workspaceId) setActiveWsId(hist.workspaceId);
+    const agentId  = hist.agent || 'shell';
+    const targetCwd = hist.cwd || cwd;
+    if (!targetCwd) { window.UI?.toast?.({ kind: 'err', title: 'No workspace', body: 'Workspace no longer exists.' }); return; }
+    const id = 't' + (++termSeq.current);
+    const ag = agents.find(a => a.id === agentId);
+    const entry = {
+      id, agent: agentId === 'shell' ? null : agentId,
+      title: ag?.label || hist.title || 'Shell',
+      cwd: targetCwd, workspaceId: hist.workspaceId, sessionId: null,
+    };
+    setTerminals(prev => { const n = [...prev, entry]; persistSessions(n); return n; });
+    setActiveTermId(id);
+    setSub('terminal');
+  }, [cwd, agents, setActiveWsId, persistSessions]);
 
   const closeTerminal = useCallback((id) => {
     setTerminals(prev => {
-      const rest = prev.filter(t => t.id !== id);
+      const t = prev.find(x => x.id === id);
+      if (t?.sessionId) {
+        fetch(`/api/terminal-sessions/${t.sessionId}`, { method: 'DELETE' }).catch(() => {});
+      }
+      // Add coding-agent sessions to history so user can resume later
+      if (t && t.agent) {
+        setSessionHistory(prevHist => {
+          const entry = { ...t, closedAt: Date.now() };
+          const next = [entry, ...prevHist.filter(h => h.sessionId !== t.sessionId)].slice(0, 10);
+          lsWrite(HISTORY_KEY, next);
+          return next;
+        });
+      }
+      const rest = prev.filter(x => x.id !== id);
       setActiveTermId(cur => cur === id ? (rest.length ? rest[rest.length - 1].id : null) : cur);
+      persistSessions(rest);
       return rest;
     });
-  }, []);
+  }, [persistSessions]);
+
+  const handleSessionId = useCallback((termId, sid) => {
+    setTerminals(prev => {
+      const next = prev.map(t => t.id === termId ? { ...t, sessionId: sid } : t);
+      persistSessions(next);
+      return next;
+    });
+  }, [persistSessions]);
 
   // ── Workspace CRUD ─────────────────────────────────────────────────────────
   const addWorkspace = async (folderPath, name) => {
@@ -178,12 +277,12 @@ export function CodeHubTab({ isVisible = true }) {
     if (job.workspaceId) setActiveWsId(job.workspaceId);
     if (job.agentId) setSelectedAgentId(job.agentId);
     setSub('terminal');
-    // Auto-launch a session after state updates (next tick)
     const tid = 't' + (++termSeq.current);
     const ag = agents.find(a => a.id === job.agentId) || { label: 'Shell' };
-    setTerminals(prev => [...prev, { id: tid, agent: job.agentId === 'shell' ? null : job.agentId, title: ag.label, cwd: ws?.cwd || cwd }]);
+    const entry = { id: tid, agent: job.agentId === 'shell' ? null : job.agentId, title: ag.label, cwd: ws?.cwd || cwd, workspaceId: job.workspaceId, sessionId: null };
+    setTerminals(prev => { const n = [...prev, entry]; persistSessions(n); return n; });
     setActiveTermId(tid);
-  }, [workspaces, agents, cwd, setActiveWsId]);
+  }, [workspaces, agents, cwd, setActiveWsId, persistSessions]);
 
   // ─────────────────────────────────────────────────────────────────────────
   // Render
@@ -243,8 +342,57 @@ export function CodeHubTab({ isVisible = true }) {
               <div className="term-empty">
                 <div className="empty-orb">✦</div>
                 <div className="empty-title">Ready to Code</div>
-                <div className="empty-body">
-                  Pick a workspace and agent below, then Launch — or click an agent to quick-start.
+
+                {/* ── Restore previous-visit sessions ───────────────────── */}
+                {savedSessions.length > 0 && (
+                  <div className="sess-recover-block">
+                    <div className="sess-recover-header">
+                      <span>Previous Sessions</span>
+                      {savedSessions.length > 1 && (
+                        <button className="sess-recover-all" onClick={() => {
+                          savedSessions.forEach(s => reconnectSession(s));
+                        }}>Restore All</button>
+                      )}
+                    </div>
+                    {savedSessions.map(s => (
+                      <div key={s.sessionId || s.id} className="sess-recover-row">
+                        <span className="sess-recover-glyph">{s.agent ? (AGENT_GLYPHS[s.agent] || '✦') : '›_'}</span>
+                        <div className="sess-recover-info">
+                          <span className="sess-recover-title">{s.title || s.agent || 'Shell'}</span>
+                          <span className="sess-recover-cwd">{s.cwd}</span>
+                        </div>
+                        <button className="sess-recover-btn" onClick={() => reconnectSession(s)}>↺ Reconnect</button>
+                        <button className="sess-recover-dismiss" title="Dismiss" onClick={() => {
+                          setSavedSessions(prev => { const n = prev.filter(x => x.sessionId !== s.sessionId); lsWrite(SESSIONS_KEY, n); return n; });
+                        }}>×</button>
+                      </div>
+                    ))}
+                  </div>
+                )}
+
+                {/* ── Last 3 closed coding-agent sessions ───────────────── */}
+                {sessionHistory.filter(h => h.agent).slice(0, 3).length > 0 && (
+                  <div className="sess-history-block">
+                    <div className="sess-history-header">Recent Sessions</div>
+                    {sessionHistory.filter(h => h.agent).slice(0, 3).map(h => (
+                      <div key={(h.sessionId || h.id) + h.closedAt} className="sess-recover-row">
+                        <span className="sess-recover-glyph">{AGENT_GLYPHS[h.agent] || '✦'}</span>
+                        <div className="sess-recover-info">
+                          <span className="sess-recover-title">{h.title || h.agent}</span>
+                          <span className="sess-recover-cwd">{h.cwd}</span>
+                        </div>
+                        <span className="sess-history-age">{timeAgo(h.closedAt)}</span>
+                        <button className="sess-recover-btn" onClick={() => resumeFromHistory(h)}>▶ Resume</button>
+                      </div>
+                    ))}
+                  </div>
+                )}
+
+                {/* ── Quick-start new session ────────────────────────────── */}
+                <div className="empty-body" style={{ marginTop: savedSessions.length || sessionHistory.filter(h=>h.agent).length ? 20 : 0 }}>
+                  {savedSessions.length === 0 && sessionHistory.filter(h=>h.agent).length === 0
+                    ? 'Pick a workspace and agent below, then Launch — or click an agent to quick-start.'
+                    : 'Or start a new session:'}
                 </div>
                 <div className="qs-grid">
                   {agents.map(a => (
@@ -273,6 +421,8 @@ export function CodeHubTab({ isVisible = true }) {
                       if (fn) termFits.current[tid] = fn;
                       else delete termFits.current[tid];
                     }}
+                    sessionId={t.sessionId}
+                    onSessionId={handleSessionId}
                   />
                 </div>
               ))

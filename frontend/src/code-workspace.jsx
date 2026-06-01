@@ -28,12 +28,14 @@ const AGENT_GLYPHS = {
 };
 
 // ─── Terminal Pane ────────────────────────────────────────────────────────────
-export function TerminalPane({ id, cwd, agent, envCsv, active, onTitle, onRegisterFit }) {
+export function TerminalPane({ id, cwd, agent, envCsv, active, onTitle, onRegisterFit, sessionId, onSessionId }) {
   const containerRef = useRef(null);
   const termRef = useRef(null);
   const fitRef = useRef(null);
   const wsRef = useRef(null);
   const mountedRef = useRef(true);
+  const sessionIdRef = useRef(sessionId || null);
+  const reconnectTimer = useRef(null);
 
   useEffect(() => () => { mountedRef.current = false; }, []);
 
@@ -41,7 +43,7 @@ export function TerminalPane({ id, cwd, agent, envCsv, active, onTitle, onRegist
     if (!containerRef.current || termRef.current) return;
     const term = new Terminal({
       allowProposedApi: true,
-      scrollback: 4000,
+      scrollback: 5000,
       cursorBlink: true,
       fontFamily: 'ui-monospace, SFMono-Regular, Menlo, Consolas, monospace',
       fontSize: 13,
@@ -54,31 +56,77 @@ export function TerminalPane({ id, cwd, agent, envCsv, active, onTitle, onRegist
     try { fit.fit(); } catch {}
     termRef.current = term;
     fitRef.current = fit;
-    if (onRegisterFit) onRegisterFit(id, () => { try { fit.fit(); } catch {} });
-
-    const proto = window.location.protocol === 'https:' ? 'wss' : 'ws';
-    const params = new URLSearchParams();
-    if (cwd) params.set('cwd', cwd);
-    if (agent) params.set('agent', agent);
-    if (envCsv) params.set('env', envCsv);
-    params.set('cols', String(term.cols));
-    params.set('rows', String(term.rows));
-    const ws = new WebSocket(`${proto}://${window.location.host}/ws/terminal?${params.toString()}`);
-    ws.binaryType = 'arraybuffer';
-    wsRef.current = ws;
+    if (onRegisterFit) onRegisterFit(id, () => {
+      try {
+        fit.fit();
+        // Must also tell the backend PTY the new dimensions, otherwise it keeps
+        // using the old column count and text re-wraps incorrectly.
+        const ws = wsRef.current;
+        const t  = termRef.current;
+        if (ws && ws.readyState === WebSocket.OPEN && t) {
+          ws.send(JSON.stringify({ type: 'resize', cols: t.cols, rows: t.rows }));
+        }
+        t?.refresh(0, (t.rows || 1) - 1);
+      } catch {}
+    });
 
     const decoder = new TextDecoder();
-    ws.onmessage = (e) => {
-      if (e.data instanceof ArrayBuffer) term.write(decoder.decode(e.data));
-      else if (typeof e.data === 'string') term.write(e.data);
+
+    const connect = (isReconnect = false) => {
+      if (!mountedRef.current) return;
+      const proto = window.location.protocol === 'https:' ? 'wss' : 'ws';
+      const params = new URLSearchParams();
+      if (cwd) params.set('cwd', cwd);
+      if (agent) params.set('agent', agent);
+      if (envCsv) params.set('env', envCsv);
+      params.set('cols', String(term.cols));
+      params.set('rows', String(term.rows));
+      if (sessionIdRef.current) params.set('sid', sessionIdRef.current);
+      const ws = new WebSocket(`${proto}://${window.location.host}/ws/terminal?${params.toString()}`);
+      ws.binaryType = 'arraybuffer';
+      wsRef.current = ws;
+
+      ws.onmessage = (e) => {
+        if (e.data instanceof ArrayBuffer) {
+          term.write(decoder.decode(e.data));
+        } else if (typeof e.data === 'string') {
+          try {
+            const msg = JSON.parse(e.data);
+            if (msg.type === 'session' && msg.id) {
+              sessionIdRef.current = msg.id;
+              if (onSessionId) onSessionId(id, msg.id);
+              return;
+            }
+          } catch {}
+          term.write(e.data);
+        }
+      };
+      ws.onopen = () => {
+        if (isReconnect) {
+          try { term.write('\r\n\x1b[2m[reconnected]\x1b[0m\r\n'); } catch {}
+        }
+        term.focus();
+        if (onTitle) onTitle(id, agent ? `${agent}` : 'shell');
+        try { fit.fit(); } catch {}
+      };
+      ws.onerror = () => { try { term.write('\r\n\x1b[31m[connection error]\x1b[0m\r\n'); } catch {} };
+      ws.onclose = () => {
+        if (!mountedRef.current) return;
+        if (sessionIdRef.current) {
+          try { term.write('\r\n\x1b[33m[disconnected — reconnecting in 3s…]\x1b[0m\r\n'); } catch {}
+          reconnectTimer.current = setTimeout(() => {
+            if (mountedRef.current) connect(true);
+          }, 3000);
+        } else {
+          try { term.write('\r\n\x1b[33m[disconnected]\x1b[0m\r\n'); } catch {}
+        }
+      };
+      term.onData((d) => { if (ws.readyState === ws.OPEN) ws.send(d); });
+
+      return ws;
     };
-    ws.onopen = () => {
-      term.focus();
-      if (onTitle) onTitle(id, agent ? `${agent}` : 'shell');
-    };
-    ws.onerror = () => { try { term.write('\r\n\x1b[31m[connection error]\x1b[0m\r\n'); } catch {} };
-    ws.onclose = () => { try { term.write('\r\n\x1b[33m[disconnected]\x1b[0m\r\n'); } catch {} };
-    term.onData((d) => { if (ws.readyState === ws.OPEN) ws.send(d); });
+
+    connect(!!sessionId);
 
     let resizeTimer = null;
     const ro = new ResizeObserver(() => {
@@ -86,8 +134,8 @@ export function TerminalPane({ id, cwd, agent, envCsv, active, onTitle, onRegist
       resizeTimer = setTimeout(() => {
         try {
           fit.fit();
-          if (ws.readyState === ws.OPEN) {
-            ws.send(JSON.stringify({ type: 'resize', cols: term.cols, rows: term.rows }));
+          if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
+            wsRef.current.send(JSON.stringify({ type: 'resize', cols: term.cols, rows: term.rows }));
           }
         } catch {}
       }, 60);
@@ -96,9 +144,11 @@ export function TerminalPane({ id, cwd, agent, envCsv, active, onTitle, onRegist
 
     return () => {
       clearTimeout(resizeTimer);
+      clearTimeout(reconnectTimer.current);
       if (onRegisterFit) onRegisterFit(id, null);
       try { ro.disconnect(); } catch {}
-      try { ws.close(); } catch {}
+      // Close WS but don't send DELETE — backend session stays alive for reconnect
+      try { wsRef.current?.close(); } catch {}
       try { term.dispose(); } catch {}
       termRef.current = null;
       fitRef.current = null;
@@ -107,10 +157,21 @@ export function TerminalPane({ id, cwd, agent, envCsv, active, onTitle, onRegist
   }, []);
 
   useEffect(() => {
-    if (active && termRef.current) {
-      try { fitRef.current?.fit(); } catch {}
-      try { termRef.current.focus(); } catch {}
-    }
+    if (!active) return;
+    // rAF defers until after display:block is painted so fit measures correctly
+    const raf = requestAnimationFrame(() => {
+      try {
+        fitRef.current?.fit();
+        const ws = wsRef.current;
+        const term = termRef.current;
+        if (ws && ws.readyState === WebSocket.OPEN && term) {
+          ws.send(JSON.stringify({ type: 'resize', cols: term.cols, rows: term.rows }));
+        }
+        termRef.current?.refresh(0, (termRef.current.rows || 1) - 1);
+      } catch {}
+      try { termRef.current?.focus(); } catch {}
+    });
+    return () => cancelAnimationFrame(raf);
   }, [active]);
 
   return (
