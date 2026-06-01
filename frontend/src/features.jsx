@@ -59,6 +59,7 @@ function ShareEditor({ share, onSave, onClose }) {
     }
     const payload = {
       name: name.trim(),
+      originalName: isEdit ? share.name : undefined,
       path: path.trim(),
       comment,
       readOnly,
@@ -721,6 +722,7 @@ function GenerateKeyModal({ onCreate, onClose }) {
     try {
       await axios.post('/api/ssh/keys/generate', {
         name: name.trim(),
+      originalName: isEdit ? share.name : undefined,
         type,
         bits: type === 'ED25519' ? 256 : bits,
         comment: comment.trim(),

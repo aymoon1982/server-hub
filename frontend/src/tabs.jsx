@@ -26,7 +26,11 @@ function Sparkline({ data, width = 80, height = 22, stroke = 'currentColor', fil
   const pts = data.map((v, i) => `${(i * step).toFixed(2)},${(height - ((v - min) / range) * height).toFixed(2)}`).join(' ');
   const area = `0,${height} ${pts} ${width},${height}`;
   return (
-    <svg width={width} height={height} viewBox={`0 0 ${width} ${height}`} style={{ display: 'block', overflow: 'visible' }}>
+    <svg
+      viewBox={`0 0 ${width} ${height}`}
+      preserveAspectRatio="none"
+      style={{ display: 'block', width: '100%', height, maxWidth: '100%', overflow: 'hidden' }}
+    >
       {fill !== 'none' && <polygon points={area} fill={fill} opacity={0.18} />}
       <polyline points={pts} fill="none" stroke={stroke} strokeWidth={1.4} strokeLinecap="round" strokeLinejoin="round" />
     </svg>
@@ -585,7 +589,7 @@ function Overview({ onNav }) {
             </div>
             <div className="res-big-row" style={{ display: 'flex', gap: 24, alignItems: 'center', flexWrap: 'wrap' }}>
               <Gauge value={stats.cpu} label="utilization" sub={`temp ${stats.temps?.cpu ? stats.temps.cpu.toFixed(0) : 0}°C`} />
-              <div className="res-big-spark" style={{ flex: 1, minWidth: 200 }}>
+              <div className="res-big-spark" style={{ flex: 1, minWidth: 0 }}>
                 <Sparkline data={cpuHistory} width={300} height={56} stroke="var(--accent)" fill="var(--accent)" />
                 <div className="res-spark-meta mono">load avg <b>{stats.cpu?.toFixed(1)}%</b></div>
               </div>
@@ -796,7 +800,7 @@ function Overview({ onNav }) {
                 onDrop={() => handleDrop(index)}
                 onDragEnd={handleDragEnd}
                 className={`grid-item-container ${customizing ? 'widget-customizing' : ''} ${dragOverIndex === index ? 'widget-drag-over' : ''}`}
-                style={{ gridColumn: `span ${span}`, minWidth: 260, display: 'flex', flexDirection: 'column' }}
+                style={{ gridColumn: `span ${span}`, minWidth: 0, display: 'flex', flexDirection: 'column' }}
               >
                 {customizing && (
                   <div className="widget-custom-controls">

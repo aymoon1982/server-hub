@@ -109,15 +109,15 @@ export function CLIUsageTab() {
   const agy = data?.agy || {};
   
   return (
-    <div style={{ padding: 24 }}>
+    <div className="cli-usage-root" style={{ padding: 24 }}>
       <div style={{ marginBottom: 24 }}>
         <h2 style={{ fontSize: '1.4rem', fontWeight: 600, marginBottom: 8 }}>⚡ CLI Usage Dashboard</h2>
         <p style={{ color: 'var(--text-3)', fontSize: '0.9rem' }}>Claude Code & agy (Antigravity) usage monitoring</p>
       </div>
-      
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(300px, 1fr))', gap: 20 }}>
+
+      <div className="cli-usage-grid" style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(300px, 1fr))', gap: 20 }}>
         {/* Claude Code Card */}
-        <div style={{ 
+        <div className="cli-usage-card" style={{
           background: 'var(--surface)', borderRadius: 12, padding: 20,
           border: '1px solid var(--line)'
         }}>
@@ -162,7 +162,7 @@ export function CLIUsageTab() {
         </div>
         
         {/* agy Card */}
-        <div style={{ 
+        <div className="cli-usage-card" style={{
           background: 'var(--surface)', borderRadius: 12, padding: 20,
           border: '1px solid var(--line)'
         }}>
