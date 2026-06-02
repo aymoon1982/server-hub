@@ -2107,6 +2107,10 @@ input, textarea, select { font-family: inherit; font-size: inherit; color: var(-
 .tkb-mod.is-on { background: var(--accent); color: var(--accent-ink); border-color: var(--accent); }
 .tkb-sep { flex: 0 0 auto; width: 1px; height: 16px; background: var(--line-2); margin: 0 2px; }
 
+/* Tab being dragged for reorder (long-press) — works on desktop topbar too */
+.tab-pill.is-dragging { opacity: 0.92; cursor: grabbing; }
+.shell-tabs.is-reordering { user-select: none; cursor: grabbing; }
+
 /* ──────────────────────────────────────────────────────────────────────────
    Mobile / Responsive  —  v4 (zero horizontal scroll, card layouts)
    Breakpoints: ≤768px = mobile, 769–1024px = tablet
@@ -2221,6 +2225,16 @@ input, textarea, select { font-family: inherit; font-size: inherit; color: var(-
   /* Color is the active indicator — drop the sliding bar */
   .shell-tabs .tab-pill.is-active::after { display: none; }
   .shell-tabs-sep { display: none; }
+  /* While reordering, freeze scroll-snap jitter and lift the dragged pill */
+  .shell-tabs.is-reordering { scroll-behavior: auto; }
+  .shell-tabs.is-reordering .tab-pill { transition: transform 0.12s ease; }
+  .shell-tabs .tab-pill.is-dragging {
+    transform: scale(1.12);
+    color: var(--accent);
+    background: var(--accent-soft);
+    border-radius: 12px;
+  }
+  .shell-tabs .tab-pill.is-dragging .nav-glyph { color: var(--accent); }
   /* Count becomes a small badge pinned to the icon's top-right */
   .shell-tabs .tab-pill .nav-count {
     position: absolute;

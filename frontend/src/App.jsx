@@ -227,6 +227,78 @@ function Shell() {
     el?.scrollIntoView({ behavior: 'smooth', inline: 'center', block: 'nearest' });
   }, [activeTab]);
 
+  // ── Draggable / reorderable tab bar ──────────────────────────────────────
+  const [tabOrder, setTabOrder] = useState(() => {
+    try {
+      const saved = JSON.parse(localStorage.getItem('dashboard_tab_order') || 'null');
+      if (Array.isArray(saved)) {
+        const valid = saved.filter(id => TABS.some(t => t.id === id));
+        const missing = TABS.filter(t => !valid.includes(t.id)).map(t => t.id);
+        return [...valid, ...missing];
+      }
+    } catch {}
+    return TABS.map(t => t.id);
+  });
+  const orderedTabs = useMemo(
+    () => tabOrder.map(id => TABS.find(t => t.id === id)).filter(Boolean),
+    [tabOrder]
+  );
+  const [dragTab, setDragTab] = useState(null);
+  const pressTimer = useRef(null);
+  const draggedRef = useRef(false);
+
+  const writeOrder = (arr) => { try { localStorage.setItem('dashboard_tab_order', JSON.stringify(arr)); } catch {} };
+
+  const beginTabDrag = (id) => {
+    draggedRef.current = true;
+    setDragTab(id);
+    if (navigator.vibrate) { try { navigator.vibrate(12); } catch {} }
+    const move = (ev) => {
+      const x = ev.clientX ?? ev.touches?.[0]?.clientX;
+      const y = ev.clientY ?? ev.touches?.[0]?.clientY;
+      if (x == null) return;
+      const overEl = document.elementFromPoint(x, y)?.closest?.('[data-tabid]');
+      const overId = overEl?.dataset?.tabid;
+      if (overId && overId !== id) {
+        setTabOrder(prev => {
+          const arr = [...prev];
+          const from = arr.indexOf(id), to = arr.indexOf(overId);
+          if (from < 0 || to < 0 || from === to) return prev;
+          arr.splice(to, 0, arr.splice(from, 1)[0]);
+          writeOrder(arr);
+          return arr;
+        });
+      }
+    };
+    const end = () => {
+      window.removeEventListener('pointermove', move);
+      window.removeEventListener('pointerup', end);
+      window.removeEventListener('pointercancel', end);
+      setDragTab(null);
+      // Suppress the trailing click so a drag doesn't also navigate
+      setTimeout(() => { draggedRef.current = false; }, 60);
+    };
+    window.addEventListener('pointermove', move);
+    window.addEventListener('pointerup', end);
+    window.addEventListener('pointercancel', end);
+  };
+
+  const onTabPointerDown = (e, id) => {
+    const sx = e.clientX, sy = e.clientY;
+    clearTimeout(pressTimer.current);
+    pressTimer.current = setTimeout(() => beginTabDrag(id), 320);
+    const watch = (ev) => {
+      if (Math.abs(ev.clientX - sx) > 12 || Math.abs(ev.clientY - sy) > 12) cleanup();
+    };
+    const cleanup = () => {
+      clearTimeout(pressTimer.current);
+      window.removeEventListener('pointermove', watch);
+      window.removeEventListener('pointerup', cleanup);
+    };
+    window.addEventListener('pointermove', watch);
+    window.addEventListener('pointerup', cleanup);
+  };
+
   const handleTouchStart = (e) => {
     touchStartX.current = e.touches[0].clientX;
     touchStartY.current = e.touches[0].clientY;
@@ -246,6 +318,7 @@ function Shell() {
         target.closest('.term-display') ||
         target.closest('.ws-root') ||
         target.closest('.fb-list') ||
+        target.closest('.shell-tabs') ||
         target.closest('input') ||
         target.closest('textarea') ||
         target.closest('select') ||
@@ -254,16 +327,17 @@ function Shell() {
         return;
       }
 
-      const currentIndex = TABS.findIndex(tab => tab.id === activeTab);
+      const order = orderedTabs;
+      const currentIndex = order.findIndex(tab => tab.id === activeTab);
       if (diffX < 0) {
         // Swipe Left: Next Page
-        if (currentIndex < TABS.length - 1) {
-          setActiveTab(TABS[currentIndex + 1].id);
+        if (currentIndex < order.length - 1) {
+          setActiveTab(order[currentIndex + 1].id);
         }
       } else {
         // Swipe Right: Previous Page
         if (currentIndex > 0) {
-          setActiveTab(TABS[currentIndex - 1].id);
+          setActiveTab(order[currentIndex - 1].id);
         }
       }
     }
@@ -319,7 +393,7 @@ function Shell() {
       if (storedSsh) {
         try { setSshCount((JSON.parse(storedSsh) || []).length); } catch (e) { setSshCount(0); }
       }
-    } catch (e) {}
+    } catch {}
   };
 
   useEffect(() => {
@@ -513,22 +587,19 @@ function Shell() {
         </div>
       </header>
 
-      <nav ref={tabsNavRef} className={`shell-tabs${t.nav === 'sidebar' ? ' shell-tabs--sidebar-hidden' : ''}`}>
-        {SECTIONS.map((sec, si) => (
-          <React.Fragment key={sec.id}>
-            {si > 0 && <span className="shell-tabs-sep" />}
-            {TABS.filter(x => x.section === sec.id).map(tab => (
-              <button
-                key={tab.id}
-                className={`tab-pill ${activeTab === tab.id ? 'is-active' : ''}`}
-                onClick={() => setActiveTab(tab.id)}
-              >
-                <span className="nav-glyph">{tab.icon ? <tab.icon size={18} strokeWidth={1.75} /> : tab.glyph}</span>
-                <span>{tab.label}</span>
-                {counts[tab.id] !== '' && <span className={`nav-count ${tab.badge ? 'is-badge' : ''}`}>{counts[tab.id]}</span>}
-              </button>
-            ))}
-          </React.Fragment>
+      <nav ref={tabsNavRef} className={`shell-tabs${t.nav === 'sidebar' ? ' shell-tabs--sidebar-hidden' : ''}${dragTab ? ' is-reordering' : ''}`}>
+        {orderedTabs.map(tab => (
+          <button
+            key={tab.id}
+            data-tabid={tab.id}
+            className={`tab-pill ${activeTab === tab.id ? 'is-active' : ''}${dragTab === tab.id ? ' is-dragging' : ''}`}
+            onPointerDown={(e) => onTabPointerDown(e, tab.id)}
+            onClick={() => { if (!draggedRef.current) setActiveTab(tab.id); }}
+          >
+            <span className="nav-glyph">{tab.icon ? <tab.icon size={18} strokeWidth={1.75} /> : tab.glyph}</span>
+            <span>{tab.label}</span>
+            {counts[tab.id] !== '' && <span className={`nav-count ${tab.badge ? 'is-badge' : ''}`}>{counts[tab.id]}</span>}
+          </button>
         ))}
       </nav>
 
@@ -661,7 +732,7 @@ function AlertThresholds() {
       if ('Notification' in window && Notification.permission === 'default') {
         Notification.requestPermission();
       }
-    } catch (e) {}
+    } catch {}
     if (mountedRef.current) setSaving(false);
   };
 
