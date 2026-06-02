@@ -40,6 +40,7 @@ export function TerminalPane({ id, cwd, agent, envCsv, active, onTitle, onRegist
   // Sticky Ctrl modifier for the mobile key bar
   const ctrlRef = useRef(false);
   const [ctrlOn, setCtrlOn] = useState(false);
+  const [kbFocused, setKbFocused] = useState(false);
 
   useEffect(() => () => { mountedRef.current = false; }, []);
 
@@ -73,6 +74,14 @@ export function TerminalPane({ id, cwd, agent, envCsv, active, onTitle, onRegist
     try { fit.fit(); } catch {}
     termRef.current = term;
     fitRef.current = fit;
+
+    // Track terminal focus so the mobile key bar only shows with the keyboard.
+    // A short blur delay avoids flicker when a key-bar tap re-focuses the term.
+    let blurTimer = null;
+    if (term.textarea) {
+      term.textarea.addEventListener('focus', () => { clearTimeout(blurTimer); setKbFocused(true); });
+      term.textarea.addEventListener('blur', () => { blurTimer = setTimeout(() => setKbFocused(false), 150); });
+    }
     if (onRegisterFit) onRegisterFit(id, () => {
       try {
         fit.fit();
@@ -209,7 +218,7 @@ export function TerminalPane({ id, cwd, agent, envCsv, active, onTitle, onRegist
       style={{ display: active ? 'flex' : 'none', flexDirection: 'column', width: '100%', height: '100%', background: '#08080c' }}
     >
       <div ref={containerRef} className="tp-term-host" style={{ flex: 1, minHeight: 0, width: '100%' }} />
-      <TerminalKeyBar onKey={sendSeq} ctrlOn={ctrlOn} onToggleCtrl={toggleCtrl} />
+      <TerminalKeyBar onKey={sendSeq} ctrlOn={ctrlOn} onToggleCtrl={toggleCtrl} visible={active && kbFocused} />
     </div>
   );
 }

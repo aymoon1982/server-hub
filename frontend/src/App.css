@@ -2053,12 +2053,12 @@ input, textarea, select { font-family: inherit; font-size: inherit; color: var(-
    users the keys a soft keyboard can't: Esc / Tab / Ctrl / arrows / symbols.
    ────────────────────────────────────────────────────────────────────────── */
 .term-keybar {
-  display: none;
+  display: none;             /* shown only when focused on mobile (.is-visible) */
   align-items: center;
-  gap: 5px;
+  gap: 4px;
   flex-shrink: 0;
-  padding: 6px 8px;
-  background: oklch(0.17 0.012 280);
+  padding: 5px 7px;
+  background: var(--bg-2);
   border-top: 1px solid var(--line);
   overflow-x: auto;
   -webkit-overflow-scrolling: touch;
@@ -2068,15 +2068,15 @@ input, textarea, select { font-family: inherit; font-size: inherit; color: var(-
 .term-keybar::-webkit-scrollbar { display: none; }
 .tkb-key {
   flex: 0 0 auto;
-  min-width: 40px;
-  height: 38px;
-  padding: 0 11px;
-  border-radius: 9px;
+  min-width: 28px;
+  height: 27px;
+  padding: 0 8px;
+  border-radius: 7px;
   border: 1px solid var(--line-2);
   background: var(--surface-2);
-  color: var(--text-1);
+  color: var(--text);
   font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
-  font-size: 15px;
+  font-size: 11px;
   font-weight: 600;
   line-height: 1;
   cursor: pointer;
@@ -2087,10 +2087,10 @@ input, textarea, select { font-family: inherit; font-size: inherit; color: var(-
   justify-content: center;
   transition: background 0.1s, transform 0.06s;
 }
-.tkb-key--wide { font-size: 13px; }
+.tkb-key--wide { font-size: 10px; }
 .tkb-key:active { background: var(--accent-soft); border-color: var(--accent); transform: scale(0.94); }
 .tkb-mod.is-on { background: var(--accent); color: var(--accent-ink); border-color: var(--accent); }
-.tkb-sep { flex: 0 0 auto; width: 1px; height: 22px; background: var(--line-2); margin: 0 3px; }
+.tkb-sep { flex: 0 0 auto; width: 1px; height: 16px; background: var(--line-2); margin: 0 2px; }
 
 /* ──────────────────────────────────────────────────────────────────────────
    Mobile / Responsive  —  v4 (zero horizontal scroll, card layouts)
@@ -2808,8 +2808,17 @@ input, textarea, select { font-family: inherit; font-size: inherit; color: var(-
   .term-tab { height: 44px; padding: 0 14px; font-size: 13px; }
   .term-tab-x { font-size: 18px; padding: 4px 6px; }
 
-  /* Reveal the on-screen terminal key bar on touch layouts */
-  .term-keybar { display: flex; }
+  /* On-screen terminal key bar — floats fixed above the soft keyboard.
+     `bottom` is set from JS via the VisualViewport API (term-keybar.jsx). */
+  .term-keybar.is-visible {
+    display: flex;
+    position: fixed;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    z-index: 6500;
+    box-shadow: 0 -4px 16px rgba(0,0,0,0.25);
+  }
   .fb-dialog {
     width: 100% !important;
     max-width: calc(100vw - 16px) !important;

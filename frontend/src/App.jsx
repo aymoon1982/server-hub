@@ -349,7 +349,15 @@ function Shell() {
   // Keyboard shortcuts
   useEffect(() => {
     const onKey = (e) => {
-      const inField = e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA';
+      const t = e.target;
+      // Never hijack keys while composing (IME) or while typing in a field,
+      // terminal, or any open session/code surface. This is what caused "/"
+      // to steal focus and drop/duplicate the next keystroke in agents.
+      const inField =
+        e.isComposing || e.keyCode === 229 ||
+        t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.isContentEditable ||
+        (t.closest && (t.closest('.xterm') || t.closest('.term-display') ||
+                       t.closest('.sess-overlay') || t.closest('.hub-terminal-section')));
       if (e.key === '/' && !inField) {
         e.preventDefault();
         document.querySelector('.top-search input')?.focus();

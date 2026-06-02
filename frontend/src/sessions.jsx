@@ -193,6 +193,7 @@ function RealTerminalPane({ session, active }) {
   const wsRef = useRef(null);
   const ctrlRef = useRef(false);
   const [ctrlOn, setCtrlOn] = useState(false);
+  const [kbFocused, setKbFocused] = useState(false);
   const { setSessions, fullscreen } = useSessions();
 
   const updateStatus = useCallback((status) => {
@@ -235,6 +236,13 @@ function RealTerminalPane({ session, active }) {
 
     termRef.current = term;
     fitRef.current = fit;
+
+    // Track focus so the mobile key bar shows only with the keyboard open.
+    let blurTimer = null;
+    if (term.textarea) {
+      term.textarea.addEventListener('focus', () => { clearTimeout(blurTimer); setKbFocused(true); });
+      term.textarea.addEventListener('blur', () => { blurTimer = setTimeout(() => setKbFocused(false), 150); });
+    }
 
     term.writeln('\x1b[2m· connecting …\x1b[0m');
     updateStatus('connecting');
@@ -345,7 +353,7 @@ function RealTerminalPane({ session, active }) {
   return (
     <div className={`sh-pane mono`} style={{ display: active ? 'flex' : 'none', flexDirection: 'column', height: '100%', width: '100%', padding: 0, background: '#0a0a0a' }}>
       <div ref={hostRef} className="terminal-body" style={{ flex: 1, minHeight: 0, width: '100%', padding: '8px' }} />
-      <TerminalKeyBar onKey={sendSeq} ctrlOn={ctrlOn} onToggleCtrl={toggleCtrl} />
+      <TerminalKeyBar onKey={sendSeq} ctrlOn={ctrlOn} onToggleCtrl={toggleCtrl} visible={active && kbFocused} />
     </div>
   );
 }

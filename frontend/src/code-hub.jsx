@@ -74,12 +74,14 @@ export function CodeHubTab({ isVisible = true }) {
   // ── Popover / UI state ─────────────────────────────────────────────────────
   const [showWsPop, setShowWsPop]     = useState(false);
   const [showAgPop, setShowAgPop]     = useState(false);
+  const [showNewMenu, setShowNewMenu] = useState(false);
   const [showBrowser, setShowBrowser] = useState(false);
   const [renameId, setRenameId]       = useState(null);
   const [renameVal, setRenameVal]     = useState('');
   const renameRef   = useRef(null);
   const wsPopRef    = useRef(null);
   const agPopRef    = useRef(null);
+  const newMenuRef  = useRef(null);
   const mountedRef  = useRef(true);
   useEffect(() => () => { mountedRef.current = false; }, []);
 
@@ -92,14 +94,15 @@ export function CodeHubTab({ isVisible = true }) {
 
   // Close popovers on outside click
   useEffect(() => {
-    if (!showWsPop && !showAgPop) return;
+    if (!showWsPop && !showAgPop && !showNewMenu) return;
     const h = (e) => {
       if (showWsPop && wsPopRef.current && !wsPopRef.current.contains(e.target)) setShowWsPop(false);
       if (showAgPop && agPopRef.current && !agPopRef.current.contains(e.target)) setShowAgPop(false);
+      if (showNewMenu && newMenuRef.current && !newMenuRef.current.contains(e.target)) setShowNewMenu(false);
     };
     document.addEventListener('mousedown', h);
     return () => document.removeEventListener('mousedown', h);
-  }, [showWsPop, showAgPop]);
+  }, [showWsPop, showAgPop, showNewMenu]);
 
   // Re-fit terminals when tab / sub-tab becomes visible.
   // Use two passes: rAF to let display:block paint, then a 100ms follow-up
@@ -332,9 +335,31 @@ export function CodeHubTab({ isVisible = true }) {
                 );
               })}
               <div style={{ flex: 1 }} />
-              <button className="btn-ghost sm" style={{ marginRight: 10, alignSelf: 'center' }} onClick={() => launchSession('shell')}>
-                + Shell
-              </button>
+              <div className="term-new" ref={newMenuRef}>
+                <button
+                  className="term-new-btn"
+                  onClick={() => setShowNewMenu(v => !v)}
+                  disabled={!cwd}
+                  title="New session — shell or coding agent"
+                >+</button>
+                {showNewMenu && (
+                  <div className="term-new-menu">
+                    <div className="term-new-head">New session</div>
+                    {agents.map(a => (
+                      <button
+                        key={a.id}
+                        className="term-new-item"
+                        disabled={!cwd}
+                        onClick={() => { launchSession(a.id); setShowNewMenu(false); }}
+                      >
+                        <span className="term-new-glyph">{AGENT_GLYPHS[a.id] || '✦'}</span>
+                        <span className="term-new-label">{a.label}</span>
+                        {a.version && <span className="term-new-ver mono">v{a.version}</span>}
+                      </button>
+                    ))}
+                  </div>
+                )}
+              </div>
             </div>
           )}
           <div className="term-display">
