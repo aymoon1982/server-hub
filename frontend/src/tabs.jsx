@@ -6,6 +6,7 @@ import Editor from '@monaco-editor/react';
 import { MetricsTab } from './metrics.jsx';
 import { PackagesTab } from './packages.jsx';
 import { LANScannerTab } from './lan-scanner.jsx';
+import { EnvManagerTab } from './env-manager.jsx';
 
 export const makeDynamicUrl = (originalUrl) => {
   if (!originalUrl) return originalUrl;
@@ -238,13 +239,9 @@ function Overview({ onNav }) {
         { id: 'web', keywords: ['web', 'website', 'ui', 'port', 'manual', 'link', 'discover'] },
         { id: 'backend', keywords: ['backend', 'internal', 'port', 'tcp', 'udp', 'socket'] },
         { id: 'docker', keywords: ['docker', 'container', 'compose', 'stack', 'image', 'volume'] },
-        { id: 'code', keywords: ['code', 'workspace', 'vscode', 'editor', 'ide', 'file'] },
-        { id: 'jobs', keywords: ['job', 'agent', 'run', 'background', 'task'] },
-        { id: 'agents', keywords: ['agent', 'model', 'ollama', 'gemini', 'claude', 'aider'] },
-        { id: 'samba', keywords: ['samba', 'share', 'nas', 'smb', 'user'] },
-        { id: 'files', keywords: ['file', 'directory', 'explorer', 'folder', 'backup', 'sync'] },
-        { id: 'ssh', keywords: ['ssh', 'terminal', 'remote', 'connect', 'server'] },
-        { id: 'usage', keywords: ['usage', 'cli', 'command', 'terminal'] }
+        { id: 'code', keywords: ['code', 'workspace', 'vscode', 'editor', 'ide', 'agent', 'model', 'ollama', 'gemini', 'claude', 'aider', 'job', 'usage', 'cli', 'terminal', 'run'] },
+        { id: 'files', keywords: ['file', 'directory', 'explorer', 'folder', 'backup', 'sync', 'samba', 'share', 'nas', 'smb'] },
+        { id: 'ssh', keywords: ['ssh', 'remote', 'connect', 'server'] }
       ].find(t => t.id === q || t.keywords.some(k => k.includes(q)));
 
       if (match) {
@@ -741,7 +738,7 @@ function Overview({ onNav }) {
         <div className="bento-row kpis">
           <KpiCard label="Web UIs" value={runningWeb.toString()} sub={`${services.filter(s => s.isWebUi).length} total discovered`} onClick={() => onNav('web')} colorClass="kpi-violet" />
           <KpiCard label="Backend" value={runningBack.toString()} sub={`${services.filter(s => !s.isWebUi).length} total services`} onClick={() => onNav('backend')} colorClass="kpi-cyan" />
-          <KpiCard label="Samba" value={sambaActive.toString()} sub={`${shares.length} exported shares`} onClick={() => onNav('samba')} colorClass="kpi-green" />
+          <KpiCard label="Samba" value={sambaActive.toString()} sub={`${shares.length} exported shares`} onClick={() => onNav('files')} colorClass="kpi-green" />
           <KpiCard label="SSH Servers" value={sshCount.toString()} sub="saved connections" onClick={() => onNav('ssh')} colorClass="kpi-amber" />
         </div>
 
@@ -1095,6 +1092,8 @@ function ServicesTab({ kind, cardStyle }) {
     return res;
   }, [list, q, filter]);
 
+  const effectiveCardStyle = ['list', 'tile', 'preview'].includes(cardStyle) ? cardStyle : 'tile';
+
   return (
     <div className="tab-services">
       <div className="services-toolbar">
@@ -1113,9 +1112,19 @@ function ServicesTab({ kind, cardStyle }) {
         </div>
       </div>
 
-      {cardStyle === 'list' && <ServicesList list={filtered} kind={kind} onLogs={onLogs} onRestart={restart} onStop={stop} onOpen={open} onEdit={setEditingService} />}
-      {cardStyle === 'tile' && <ServicesTiles list={filtered} kind={kind} onLogs={onLogs} onRestart={restart} onOpen={open} onEdit={setEditingService} />}
-      {cardStyle === 'preview' && <ServicesPreview list={filtered} kind={kind} onLogs={onLogs} onOpen={open} onEdit={setEditingService} />}
+      {filtered.length === 0 ? (
+        <div className="empty muted" style={{ padding: '40px 16px', textAlign: 'center' }}>
+          {list.length === 0
+            ? `No ${isWeb ? 'web UIs' : 'backend services'} discovered yet.`
+            : 'No matches for the current filter.'}
+        </div>
+      ) : effectiveCardStyle === 'list' ? (
+        <ServicesList list={filtered} kind={kind} onLogs={onLogs} onRestart={restart} onStop={stop} onOpen={open} onEdit={setEditingService} />
+      ) : effectiveCardStyle === 'preview' ? (
+        <ServicesPreview list={filtered} kind={kind} onLogs={onLogs} onOpen={open} onEdit={setEditingService} />
+      ) : (
+        <ServicesTiles list={filtered} kind={kind} onLogs={onLogs} onRestart={restart} onOpen={open} onEdit={setEditingService} />
+      )}
 
       {editingService && (
         <ServiceEditModal
@@ -2903,11 +2912,14 @@ function FilesTab() {
       {/* Sub tabs */}
       <div className="subnav">
         <button type="button" className={`subnav-item ${subTab === 'explorer' ? 'is-active' : ''}`} onClick={() => setSubTab('explorer')}>File Explorer</button>
+        <button type="button" className={`subnav-item ${subTab === 'shares' ? 'is-active' : ''}`} onClick={() => setSubTab('shares')}>Samba Shares</button>
         <button type="button" className={`subnav-item ${subTab === 'backups' ? 'is-active' : ''}`} onClick={() => setSubTab('backups')}>Backup Sync Manager</button>
       </div>
 
       {subTab === 'backups' ? (
         <BackupsManagerTab />
+      ) : subTab === 'shares' ? (
+        <SambaTab />
       ) : (
         <>
           {/* Toolbar */}
@@ -5023,6 +5035,7 @@ function SystemTab() {
     { id: 'logs',      label: 'Logs',      glyph: '≡' },
     { id: 'network',   label: 'Network',   glyph: '⇌' },
     { id: 'lan',       label: 'LAN',       glyph: '⇆' },
+    { id: 'env',       label: 'Env',       glyph: '⊙' },
     { id: 'units',     label: 'Units',     glyph: '⚙' },
     { id: 'cron',      label: 'Cron',      glyph: '◷' },
   ];
@@ -5042,6 +5055,7 @@ function SystemTab() {
       {sub === 'logs'      && <LogsTab />}
       {sub === 'network'   && <NetworkTab />}
       {sub === 'lan'       && <LANScannerTab />}
+      {sub === 'env'       && <EnvManagerTab />}
       {sub === 'units'     && <SystemdTab />}
       {sub === 'cron'      && <CronTab />}
     </div>

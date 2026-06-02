@@ -76,6 +76,7 @@ export function CodeHubTab({ isVisible = true }) {
   const [showWsPop, setShowWsPop]     = useState(false);
   const [showAgPop, setShowAgPop]     = useState(false);
   const [showNewMenu, setShowNewMenu] = useState(false);
+  const [newMenuPos, setNewMenuPos]   = useState(null);
   const [showBrowser, setShowBrowser] = useState(false);
   const [renameId, setRenameId]       = useState(null);
   const [renameVal, setRenameVal]     = useState('');
@@ -83,6 +84,7 @@ export function CodeHubTab({ isVisible = true }) {
   const wsPopRef    = useRef(null);
   const agPopRef    = useRef(null);
   const newMenuRef  = useRef(null);
+  const newBtnRef   = useRef(null);
   const mountedRef  = useRef(true);
   useEffect(() => () => { mountedRef.current = false; }, []);
 
@@ -354,13 +356,26 @@ export function CodeHubTab({ isVisible = true }) {
               <div style={{ flex: 1 }} />
               <div className="term-new" ref={newMenuRef}>
                 <button
+                  ref={newBtnRef}
                   className="term-new-btn"
-                  onClick={() => setShowNewMenu(v => !v)}
+                  onClick={() => {
+                    setShowNewMenu(v => {
+                      const nv = !v;
+                      if (nv && newBtnRef.current) {
+                        const r = newBtnRef.current.getBoundingClientRect();
+                        setNewMenuPos({ top: Math.round(r.bottom + 6), right: Math.round(window.innerWidth - r.right) });
+                      }
+                      return nv;
+                    });
+                  }}
                   disabled={!cwd}
                   title="New session — shell or coding agent"
                 >+</button>
                 {showNewMenu && (
-                  <div className="term-new-menu">
+                  <div
+                    className="term-new-menu"
+                    style={newMenuPos ? { position: 'fixed', top: newMenuPos.top, right: newMenuPos.right } : undefined}
+                  >
                     <div className="term-new-head">New session</div>
                     {agents.map(a => (
                       <button

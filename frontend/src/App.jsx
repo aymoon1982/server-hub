@@ -9,8 +9,6 @@ import { useTweaks, TweaksPanel, TweakSection, TweakRadio, TweakColor, TweakButt
 import {
   Overview,
   ServicesTab,
-  AgentsTab,
-  SambaTab,
   FilesTab,
   SSHTab,
   SystemTab,
@@ -18,10 +16,9 @@ import {
 } from './tabs.jsx';
 import { PowerMenu, DockerContainersTab, DockerImagesTab, StacksTab } from './features.jsx';
 import { CodeHubTab } from './code-hub.jsx';
-import { EnvManagerTab } from './env-manager.jsx';
 import {
   LayoutDashboard, Gauge, Globe, Server, Container, SquareTerminal,
-  Sparkles, Share2, FolderOpen, FileCode, KeyRound,
+  FolderOpen, KeyRound,
 } from 'lucide-react';
 
 const TABS = [
@@ -31,10 +28,7 @@ const TABS = [
   { id: 'backend',  label: 'Backend',  glyph: '⇆', icon: Server,          section: 'services' },
   { id: 'docker',   label: 'Docker',   glyph: '◈', icon: Container,       section: 'services' },
   { id: 'code',     label: 'Code',     glyph: '⌘', icon: SquareTerminal,  section: 'shell' },
-  { id: 'agents',   label: 'Agents',   glyph: '✦', icon: Sparkles,        section: 'services' },
-  { id: 'samba',    label: 'Samba',    glyph: '◫', icon: Share2,          section: 'storage' },
   { id: 'files',    label: 'Files',    glyph: '▢', icon: FolderOpen,      section: 'storage' },
-  { id: 'envfiles', label: 'Env',      glyph: '⊙', icon: FileCode,        section: 'storage' },
   { id: 'ssh',      label: 'SSH',      glyph: '⇄', icon: KeyRound,        section: 'shell' },
 ];
 
@@ -455,8 +449,6 @@ function Shell() {
     web:     num(webCount),
     backend: num(backendCount),
     docker:  '',
-    agents:  num(agentCount),
-    samba:   num(sambaCount),
     files:   '',
     ssh:     num(sshCount),
   };
@@ -468,10 +460,7 @@ function Shell() {
       case 'web':      return <ServicesTab kind="web" cardStyle={t.cardStyle} />;
       case 'backend':  return <ServicesTab kind="backend" cardStyle={t.cardStyle} />;
       case 'docker':   return <DockerTab />;
-      case 'agents':   return <AgentsTab />;
-      case 'samba':    return <SambaTab />;
       case 'files':    return <FilesTab />;
-      case 'envfiles': return <EnvManagerTab />;
       case 'ssh':      return <SSHTab />;
       default: return null;
     }
@@ -701,15 +690,12 @@ function Shell() {
 function pageSub(tab, hostName, hostUptime, updateCount) {
   switch (tab) {
     case 'overview': return `${hostName} · up ${hostUptime || '—'} · live stats`;
-    case 'system':   return `${updateCount > 0 ? `${updateCount} updates · ` : ''}processes, packages, metrics, logs, network, units, cron`;
+    case 'system':   return `${updateCount > 0 ? `${updateCount} updates · ` : ''}processes, packages, metrics, logs, network, LAN, env, units, cron`;
     case 'web':      return `Auto-discovered web UIs and manually added services`;
     case 'backend':  return `Internal TCP/UDP services bound to ports`;
     case 'docker':   return `Local Docker images and Compose stacks`;
-    case 'agents':   return `AI coding agents detected on this host`;
-    case 'samba':    return `Shares, users, connections and service control`;
-    case 'files':    return `Browse, edit, copy, move and manage files`;
+    case 'files':    return `Browse files and manage Samba shares`;
     case 'ssh':      return `Saved SSH connections, keys, and known_hosts`;
-    case 'envfiles': return `Browse and edit .env files across projects`;
     default: return '';
   }
 }

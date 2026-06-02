@@ -95,7 +95,7 @@
   position: absolute;
   top: calc(100% + 6px);
   right: 0;
-  z-index: 320;
+  z-index: 6000;
   min-width: 200px;
   background: var(--surface);
   border: 1px solid var(--accent-line);

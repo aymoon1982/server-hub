@@ -2187,32 +2187,42 @@ input, textarea, select { font-family: inherit; font-size: inherit; color: var(-
   .shell-sidebar { display: none !important; }
   .shell-tabs--sidebar-hidden { display: flex; }
 
-  /* Bottom tab bar — native-style icon + label nav (horizontal scroll) */
+  /* Bottom tab bar — native icon + label nav. All tabs share the width
+     equally (no horizontal scroll) so long-press drag-to-reorder works:
+     a scroll container would otherwise swallow the touch gesture. */
   .shell-tabs {
-    overflow-x: auto;
-    -webkit-overflow-scrolling: touch;
-    scrollbar-width: none;
+    overflow: hidden;
     flex-wrap: nowrap;
     gap: 0;
-    padding: 0 4px env(safe-area-inset-bottom, 0px);
+    padding: 0 2px env(safe-area-inset-bottom, 0px);
     border-top: 1px solid var(--line);
     border-bottom: none;
     background: var(--bg-2);
     align-items: stretch;
+    touch-action: none;          /* let us handle the drag gesture ourselves */
   }
   .shell-tabs::-webkit-scrollbar { display: none; }
   .shell-tabs .tab-pill {
+    flex: 1 1 0;
+    min-width: 0;
     flex-direction: column;
     justify-content: center;
     gap: 3px;
-    flex-shrink: 0;
-    min-width: 60px;
-    padding: 7px 10px 5px;
-    font-size: 10px;
+    padding: 7px 2px 5px;
+    font-size: 9.5px;
     line-height: 1.1;
     border-radius: 0;
     color: var(--text-3);
     position: relative;
+    touch-action: none;
+    overflow: hidden;
+  }
+  /* Truncate the label so equal-width pills never overflow */
+  .shell-tabs .tab-pill > span:not(.nav-glyph):not(.nav-count) {
+    max-width: 100%;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
   }
   .shell-tabs .tab-pill .nav-glyph {
     display: grid;
@@ -2275,8 +2285,22 @@ input, textarea, select { font-family: inherit; font-size: inherit; color: var(-
   .page-head { flex-direction: column; gap: 2px; align-items: flex-start; }
   .page-head .page-sub { display: none; }
 
-  /* ── Subnav — horizontal scroll allowed (it's a tab bar) ──────────── */
+  /* ── Subnav — docked to the bottom, just above the icon nav ────────────
+     A secondary nav bar pinned above the primary tab bar (native pattern).
+     Horizontally scrollable for tabs with many sub-sections. */
   .subnav {
+    position: fixed;
+    left: 0;
+    right: 0;
+    bottom: calc(58px + env(safe-area-inset-bottom, 0px));
+    z-index: 45;
+    margin: 0 !important;
+    padding: 7px 8px;
+    gap: 6px;
+    background: var(--bg-2);
+    border-top: 1px solid var(--line);
+    border-bottom: 1px solid var(--line);
+    box-shadow: 0 -2px 10px rgba(0,0,0,0.12);
     overflow-x: auto;
     -webkit-overflow-scrolling: touch;
     scrollbar-width: none;
@@ -2284,7 +2308,23 @@ input, textarea, select { font-family: inherit; font-size: inherit; color: var(-
     white-space: nowrap;
   }
   .subnav::-webkit-scrollbar { display: none; }
-  .subnav-item { padding: 8px 10px; font-size: 12px; flex-shrink: 0; }
+  .subnav-item { padding: 8px 12px; font-size: 12.5px; flex-shrink: 0; min-height: 36px; }
+  /* Only the outermost subnav docks. A nested subnav (e.g. Files ▸ Samba,
+     System ▸ Cron, which render their own sub-tabs) stays inline at the top
+     of its content so the two bars never stack on top of each other. */
+  .subnav ~ * .subnav,
+  .subnav .subnav {
+    position: static !important;
+    bottom: auto !important;
+    left: auto; right: auto;
+    box-shadow: none !important;
+    z-index: auto;
+    margin-bottom: 12px !important;
+  }
+  /* Reserve space so the fixed subnav never covers tab content */
+  .shell-main:has(.subnav) {
+    padding-bottom: calc(58px + 52px + env(safe-area-inset-bottom, 0px));
+  }
 
   /* ── Overview / Bento ─────────────────────────────────────────────── */
   .bento-row.kpis { grid-template-columns: repeat(2, 1fr); }
@@ -2642,6 +2682,44 @@ input, textarea, select { font-family: inherit; font-size: inherit; color: var(-
     border-top: 1px solid var(--line-2);
     justify-content: flex-start !important;
   }
+
+  /* ── Overview "Top processes" — compact 2-line cards (was 4 lines each) ── */
+  .tab-overview .res-proc .proc-table { border-spacing: 0 5px !important; }
+  .tab-overview .res-proc .proc-table tr {
+    display: grid !important;
+    grid-template-columns: 1fr auto;
+    align-items: baseline;
+    gap: 1px 8px;
+    padding: 7px 11px !important;
+    border: 1px solid var(--line) !important;
+    border-radius: 8px;
+    background: var(--surface);
+    margin: 0 !important;
+  }
+  .tab-overview .res-proc .proc-table td {
+    display: block !important;
+    padding: 0 !important;
+    border: 0 !important;
+    margin: 0 !important;
+    font-size: 11px;
+  }
+  .tab-overview .res-proc .proc-table td:nth-child(2) {       /* name */
+    grid-column: 1; grid-row: 1;
+    font-weight: 600 !important; font-size: 13px;
+    min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  }
+  .tab-overview .res-proc .proc-table td:nth-child(1) {       /* pid */
+    grid-column: 2; grid-row: 1; justify-self: end;
+    color: var(--text-3); font-weight: 400 !important; font-size: 10.5px;
+  }
+  .tab-overview .res-proc .proc-table td:nth-child(3) {       /* cpu */
+    grid-column: 1; grid-row: 2; color: var(--text-2);
+  }
+  .tab-overview .res-proc .proc-table td:nth-child(4) {       /* mem */
+    grid-column: 2; grid-row: 2; justify-self: end; color: var(--text-2);
+  }
+  .tab-overview .res-proc .proc-table td:nth-child(3)::before { content: "CPU "; opacity: 0.5; font-size: 9px; letter-spacing: 0.04em; }
+  .tab-overview .res-proc .proc-table td:nth-child(4)::before { content: "MEM "; opacity: 0.5; font-size: 9px; letter-spacing: 0.04em; }
 
   /* ── LAN scanner table — card layout (inline-styled <table>) ──────── */
   .lan-table-wrap { overflow-x: visible !important; }
