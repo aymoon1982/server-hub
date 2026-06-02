@@ -18,7 +18,6 @@ import {
 } from './tabs.jsx';
 import { PowerMenu, DockerContainersTab, DockerImagesTab, StacksTab } from './features.jsx';
 import { CodeHubTab } from './code-hub.jsx';
-import { LANScannerTab } from './lan-scanner.jsx';
 import { EnvManagerTab } from './env-manager.jsx';
 
 const TABS = [
@@ -27,7 +26,6 @@ const TABS = [
   { id: 'web',      label: 'Web UIs',  glyph: '▦', section: 'services' },
   { id: 'backend',  label: 'Backend',  glyph: '⇆', section: 'services' },
   { id: 'docker',   label: 'Docker',   glyph: '◈', section: 'services' },
-  { id: 'lan',      label: 'LAN',      glyph: '⇌', section: 'services' },
   { id: 'code',     label: 'Code',     glyph: '⌘', section: 'shell' },
   { id: 'agents',   label: 'Agents',   glyph: '✦', section: 'services' },
   { id: 'samba',    label: 'Samba',    glyph: '◫', section: 'storage' },
@@ -389,7 +387,6 @@ function Shell() {
       case 'files':    return <FilesTab />;
       case 'envfiles': return <EnvManagerTab />;
       case 'ssh':      return <SSHTab />;
-      case 'lan':      return <LANScannerTab />;
       default: return null;
     }
   };
@@ -629,7 +626,6 @@ function pageSub(tab, hostName, hostUptime, updateCount) {
     case 'samba':    return `Shares, users, connections and service control`;
     case 'files':    return `Browse, edit, copy, move and manage files`;
     case 'ssh':      return `Saved SSH connections, keys, and known_hosts`;
-    case 'lan':      return `Discover and inspect devices on the local network`;
     case 'envfiles': return `Browse and edit .env files across projects`;
     default: return '';
   }

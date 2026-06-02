@@ -3243,6 +3243,63 @@ input, textarea, select { font-family: inherit; font-size: inherit; color: var(-
   color: var(--accent);
 }
 
+/* ── Combined Clock + Weather card ── */
+.cw-card { padding: 0; overflow: hidden; }
+.cw-grid {
+  display: grid;
+  grid-template-columns: 1fr auto 1fr;
+  align-items: center;
+  height: 100%;
+  min-height: 120px;
+}
+.cw-clock {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 3px;
+  padding: 16px 12px;
+  text-align: center;
+}
+.cw-divider {
+  width: 1px;
+  align-self: stretch;
+  margin: 16px 0;
+  background: var(--line);
+}
+.cw-weather {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  padding: 16px 12px;
+  text-align: center;
+}
+.cw-weather-top { display: flex; align-items: center; gap: 8px; }
+.cw-weather-icon { font-size: 30px; line-height: 1; }
+.cw-weather-meta {
+  display: flex;
+  gap: 10px;
+  font-size: 10px;
+  color: var(--text-3);
+  margin-top: 2px;
+}
+.cw-city-input {
+  font-size: 11px;
+  padding: 3px 8px;
+  width: 130px;
+  border: 1px solid var(--line);
+  background: var(--surface-2);
+  color: var(--text);
+  border-radius: 6px;
+  outline: none;
+  text-align: center;
+  margin-top: 4px;
+}
+.cw-city-input:focus { border-color: var(--accent); }
+.cw-weather .weather-loc { margin-top: 4px; }
+
 .qsearch-widget {
   display: flex;
   flex-direction: column;

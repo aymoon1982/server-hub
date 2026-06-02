@@ -5,6 +5,7 @@ import { Modal } from './ui-bridge.jsx';
 import Editor from '@monaco-editor/react';
 import { MetricsTab } from './metrics.jsx';
 import { PackagesTab } from './packages.jsx';
+import { LANScannerTab } from './lan-scanner.jsx';
 
 export const makeDynamicUrl = (originalUrl) => {
   if (!originalUrl) return originalUrl;
@@ -108,9 +109,8 @@ function KBD({ children }) { return <kbd className="kbd">{children}</kbd>; }
 
 // ---------- OVERVIEW (merged with Resources) ----------
 const DEFAULT_LAYOUT = [
-  { id: 'clock', label: 'Clock & Uptime', visible: true, width: 'third' },
-  { id: 'weather', label: 'Local Weather', visible: true, width: 'third' },
-  { id: 'quick_search', label: 'Quick Search', visible: true, width: 'third' },
+  { id: 'clock_weather', label: 'Clock & Weather', visible: true, width: 'half' },
+  { id: 'quick_search', label: 'Quick Search', visible: true, width: 'half' },
   { id: 'system_gauges', label: 'System Gauges (Compact)', visible: true, width: 'full' },
   { id: 'host_info', label: 'Host Info', visible: true, width: 'half' },
   { id: 'events', label: 'System Events', visible: true, width: 'half' },
@@ -189,8 +189,8 @@ function Overview({ onNav }) {
     return () => clearInterval(interval);
   }, []);
 
-  // ── Weather state
-  const [weatherCity, setWeatherCity] = useState(() => localStorage.getItem('dashboard_weather_city') || 'London');
+  // ── Weather state — empty city ⇒ backend geolocates from the public IP
+  const [weatherCity, setWeatherCity] = useState(() => localStorage.getItem('dashboard_weather_city') || '');
   const [weatherData, setWeatherData] = useState(null);
   const [editingWeatherCity, setEditingWeatherCity] = useState(false);
   const [weatherInput, setWeatherInput] = useState(weatherCity);
@@ -198,19 +198,9 @@ function Overview({ onNav }) {
     let active = true;
     const fetchWeather = async () => {
       try {
-        const res = await axios.get(`https://wttr.in/${encodeURIComponent(weatherCity)}?format=j1`);
+        const res = await axios.get('/api/weather', { params: weatherCity ? { city: weatherCity } : {} });
         if (!active) return;
-        const current = res.data?.current_condition?.[0];
-        const area = res.data?.nearest_area?.[0];
-        if (current) {
-          setWeatherData({
-            temp: current.temp_C,
-            desc: current.weatherDesc?.[0]?.value || 'Unknown',
-            humidity: current.humidity,
-            wind: current.windspeedKmph,
-            city: area?.areaName?.[0]?.value || weatherCity
-          });
-        }
+        setWeatherData(res.data);
       } catch (e) {
         if (!active) return;
         setWeatherData({
@@ -218,13 +208,14 @@ function Overview({ onNav }) {
           desc: 'Partly Cloudy',
           humidity: '52',
           wind: '10',
-          city: weatherCity,
+          city: weatherCity || 'Unavailable',
           mock: true
         });
       }
     };
     fetchWeather();
-    return () => { active = false; };
+    const iv = setInterval(fetchWeather, 600000);
+    return () => { active = false; clearInterval(iv); };
   }, [weatherCity]);
 
   // ── Search state
@@ -395,75 +386,74 @@ function Overview({ onNav }) {
 
   const renderWidget = (id) => {
     switch (id) {
-      case 'clock':
+      case 'clock_weather': {
+        const wd = weatherData;
+        const icon = wd ? (
+          wd.desc.toLowerCase().includes('sun') || wd.desc.toLowerCase().includes('clear') ? '☀️'
+          : wd.desc.toLowerCase().includes('cloud') ? '⛅'
+          : wd.desc.toLowerCase().includes('rain') || wd.desc.toLowerCase().includes('drizzle') ? '🌧️'
+          : wd.desc.toLowerCase().includes('snow') ? '🌨️'
+          : wd.desc.toLowerCase().includes('thunder') ? '⛈️'
+          : '🌫️'
+        ) : '';
         return (
-          <div className="card bento-card" style={{ height: '100%', boxSizing: 'border-box' }}>
-            <div className="clock-widget">
-              <div className="clock-time mono">{timeStr || '00:00:00'}</div>
-              <div className="clock-date mono">{dateStr || 'Loading Date...'}</div>
-              {stats.host?.uptime && (
-                <div className="clock-uptime mono">
-                  Uptime: {stats.host.uptime}
-                </div>
-              )}
+          <div className="card bento-card cw-card" style={{ height: '100%', boxSizing: 'border-box' }}>
+            <div className="cw-grid">
+              {/* Clock */}
+              <div className="cw-clock">
+                <div className="clock-time mono">{timeStr || '00:00:00'}</div>
+                <div className="clock-date mono">{dateStr || 'Loading…'}</div>
+                {stats.host?.uptime && (
+                  <div className="clock-uptime mono">up {stats.host.uptime}</div>
+                )}
+              </div>
+              {/* Divider */}
+              <div className="cw-divider" />
+              {/* Weather */}
+              <div className="cw-weather">
+                {wd ? (
+                  <>
+                    <div className="cw-weather-top">
+                      <span className="cw-weather-icon">{icon}</span>
+                      <span className="weather-temp mono">{wd.temp}°</span>
+                    </div>
+                    <div className="weather-desc">{wd.desc}</div>
+                    <div className="cw-weather-meta mono">
+                      <span>💧{wd.humidity}%</span>
+                      <span>💨{wd.wind}km/h</span>
+                    </div>
+                    {editingWeatherCity ? (
+                      <form onSubmit={(e) => {
+                        e.preventDefault();
+                        const v = weatherInput.trim();
+                        setWeatherCity(v);
+                        if (v) localStorage.setItem('dashboard_weather_city', v);
+                        else localStorage.removeItem('dashboard_weather_city');
+                        setEditingWeatherCity(false);
+                      }}>
+                        <input
+                          value={weatherInput}
+                          onChange={(e) => setWeatherInput(e.target.value)}
+                          className="mono cw-city-input"
+                          placeholder="City (blank = auto)"
+                          autoFocus
+                          onBlur={() => setEditingWeatherCity(false)}
+                        />
+                      </form>
+                    ) : (
+                      <span className="weather-loc mono" onClick={() => { setEditingWeatherCity(true); setWeatherInput(weatherCity); }} title="Tap to change city (blank uses your location)">
+                        📍 {wd.city || 'Auto'}{weatherCity ? '' : ' · auto'}
+                      </span>
+                    )}
+                  </>
+                ) : (
+                  <div className="muted" style={{ fontSize: 11 }}>Loading weather…</div>
+                )}
+              </div>
             </div>
           </div>
         );
-      case 'weather':
-        return (
-          <div className="card bento-card" style={{ height: '100%', boxSizing: 'border-box' }}>
-            <div className="card-head">
-              <h3>Weather</h3>
-              {editingWeatherCity ? (
-                <form onSubmit={(e) => {
-                  e.preventDefault();
-                  if (weatherInput.trim()) {
-                    setWeatherCity(weatherInput.trim());
-                    localStorage.setItem('dashboard_weather_city', weatherInput.trim());
-                  }
-                  setEditingWeatherCity(false);
-                }} style={{ display: 'flex', gap: 4 }}>
-                  <input
-                    value={weatherInput}
-                    onChange={(e) => setWeatherInput(e.target.value)}
-                    className="mono"
-                    style={{ fontSize: 10, padding: '2px 4px', width: 80, border: '1px solid var(--line)', background: 'var(--surface-2)', borderRadius: 4 }}
-                    autoFocus
-                    onBlur={() => setEditingWeatherCity(false)}
-                  />
-                </form>
-              ) : (
-                <span className="weather-loc mono" onClick={() => { setEditingWeatherCity(true); setWeatherInput(weatherCity); }} title="Click to change city">
-                  📍 {weatherData?.city || weatherCity}
-                </span>
-              )}
-            </div>
-            <div className="weather-widget">
-              {weatherData ? (
-                <>
-                  <div className="weather-main">
-                    <span style={{ fontSize: 32 }}>
-                      {weatherData.desc.toLowerCase().includes('sun') || weatherData.desc.toLowerCase().includes('clear') ? '☀️'
-                        : weatherData.desc.toLowerCase().includes('cloud') ? '⛅'
-                        : weatherData.desc.toLowerCase().includes('rain') || weatherData.desc.toLowerCase().includes('drizzle') ? '🌧️'
-                        : weatherData.desc.toLowerCase().includes('snow') ? '🌨️'
-                        : weatherData.desc.toLowerCase().includes('thunder') ? '⛈️'
-                        : '🌫️'}
-                    </span>
-                    <span className="weather-temp mono">{weatherData.temp}°C</span>
-                  </div>
-                  <div className="weather-desc mono">{weatherData.desc}</div>
-                  <div className="mono" style={{ fontSize: 9, color: 'var(--text-3)', display: 'flex', gap: 10 }}>
-                    <span>💧 {weatherData.humidity}%</span>
-                    <span>💨 {weatherData.wind} km/h</span>
-                  </div>
-                </>
-              ) : (
-                <div className="muted" style={{ fontSize: 11 }}>Loading weather...</div>
-              )}
-            </div>
-          </div>
-        );
+      }
       case 'quick_search':
         return (
           <div className="card bento-card" style={{ height: '100%', boxSizing: 'border-box' }}>
@@ -5025,6 +5015,7 @@ function SystemTab() {
     { id: 'metrics',   label: 'Metrics',   glyph: '◌' },
     { id: 'logs',      label: 'Logs',      glyph: '≡' },
     { id: 'network',   label: 'Network',   glyph: '⇌' },
+    { id: 'lan',       label: 'LAN',       glyph: '⇆' },
     { id: 'units',     label: 'Units',     glyph: '⚙' },
     { id: 'cron',      label: 'Cron',      glyph: '◷' },
   ];
@@ -5043,6 +5034,7 @@ function SystemTab() {
       {sub === 'metrics'   && <MetricsTab />}
       {sub === 'logs'      && <LogsTab />}
       {sub === 'network'   && <NetworkTab />}
+      {sub === 'lan'       && <LANScannerTab />}
       {sub === 'units'     && <SystemdTab />}
       {sub === 'cron'      && <CronTab />}
     </div>

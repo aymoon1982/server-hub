@@ -1238,8 +1238,45 @@ app.get('/api/health', async (req, res) => {
     });
 });
 
-// CLI Usage Status — returns Claude CLI and agy usage data
-app.get('/api/usage-status', async (req, res) => {
+// Weather proxy — fetches wttr.in server-side (avoids the frontend CSP block).
+// With no `city`, wttr.in geolocates from the request IP (the server's public
+// IP), which for a home/LAN server matches the user's location.
+let weatherCache = { key: '', at: 0, data: null };
+app.get('/api/weather', async (req, res) => {
+    const city = (req.query.city || '').toString().trim();
+    const key = city.toLowerCase();
+    const now = Date.now();
+    // 10-minute cache per location to be kind to wttr.in
+    if (weatherCache.data && weatherCache.key === key && (now - weatherCache.at) < 600000) {
+        return res.json(weatherCache.data);
+    }
+    try {
+        const target = `https://wttr.in/${encodeURIComponent(city)}?format=j1`;
+        const r = await axios.get(target, {
+            timeout: 8000,
+            headers: { 'User-Agent': 'curl/8.0', 'Accept-Language': 'en' },
+        });
+        const current = r.data?.current_condition?.[0];
+        const area = r.data?.nearest_area?.[0];
+        if (!current) return res.status(502).json({ error: 'No weather data' });
+        const out = {
+            temp: current.temp_C,
+            feelsLike: current.FeelsLikeC,
+            desc: current.weatherDesc?.[0]?.value || 'Unknown',
+            humidity: current.humidity,
+            wind: current.windspeedKmph,
+            city: area?.areaName?.[0]?.value || city || 'Here',
+            region: area?.region?.[0]?.value || '',
+            country: area?.country?.[0]?.value || '',
+        };
+        weatherCache = { key, at: now, data: out };
+        res.json(out);
+    } catch (e) {
+        res.status(502).json({ error: e.message || 'Weather fetch failed' });
+    }
+});
+
+
     try {
         const trackerPath = '/home/ayman/.openclaw/workspace/scripts/usage-api.sh';
         if (!fs.existsSync(trackerPath)) {
