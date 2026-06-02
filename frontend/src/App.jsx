@@ -313,6 +313,7 @@ function Shell() {
         target.closest('.ws-root') ||
         target.closest('.fb-list') ||
         target.closest('.shell-tabs') ||
+        target.closest('.subnav') ||
         target.closest('input') ||
         target.closest('textarea') ||
         target.closest('select') ||
