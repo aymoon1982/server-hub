@@ -1276,7 +1276,8 @@ app.get('/api/weather', async (req, res) => {
     }
 });
 
-
+// CLI Usage Status — returns Claude CLI and agy usage data
+app.get('/api/usage-status', async (req, res) => {
     try {
         const trackerPath = '/home/ayman/.openclaw/workspace/scripts/usage-api.sh';
         if (!fs.existsSync(trackerPath)) {
