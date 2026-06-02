@@ -4,8 +4,8 @@
   "description": "Dashboard console to manage local services, Docker stacks, code workspaces, Samba shares, and terminal sessions.",
   "start_url": "/",
   "display": "standalone",
-  "background_color": "#08080c",
-  "theme_color": "#a78bfa",
+  "background_color": "#1f1e1d",
+  "theme_color": "#d97757",
   "orientation": "any",
   "icons": [
     {

@@ -220,7 +220,7 @@ function RealTerminalPane({ session, active }) {
       fontFamily: 'ui-monospace, SFMono-Regular, Menlo, Consolas, monospace',
       cursorBlink: true,
       theme: {
-        background: '#0a0a0a',
+        background: '#1f1e1d',
         foreground: '#f5f5f5',
         cursor: '#3b82f6',
         selectionBackground: 'rgba(59,130,246,0.35)',
@@ -351,7 +351,7 @@ function RealTerminalPane({ session, active }) {
   }, [active, fullscreen]);
 
   return (
-    <div className={`sh-pane mono`} style={{ display: active ? 'flex' : 'none', flexDirection: 'column', height: '100%', width: '100%', padding: 0, background: '#0a0a0a' }}>
+    <div className={`sh-pane mono`} style={{ display: active ? 'flex' : 'none', flexDirection: 'column', height: '100%', width: '100%', padding: 0, background: '#1f1e1d' }}>
       <div ref={hostRef} className="terminal-body" style={{ flex: 1, minHeight: 0, width: '100%', padding: '8px' }} />
       <TerminalKeyBar onKey={sendSeq} ctrlOn={ctrlOn} onToggleCtrl={toggleCtrl} visible={active && kbFocused} />
     </div>
@@ -402,7 +402,7 @@ function RealLogsPane({ session, active }) {
   if (!active) return null;
 
   return (
-    <div className="logs-pane mono" style={{ height: '100%', display: 'flex', flexDirection: 'column', background: '#0a0a0a', color: '#f5f5f5' }}>
+    <div className="logs-pane mono" style={{ height: '100%', display: 'flex', flexDirection: 'column', background: '#1f1e1d', color: '#f5f5f5' }}>
       <div className="logs-head" style={{ padding: '8px 12px', borderBottom: '1px solid var(--border)', display: 'flex', justifyContent: 'space-between', fontSize: '11px', color: 'var(--text-3)' }}>
         <span>Tailing logs · <b>{container}</b></span>
         <span className="muted">last 200 lines · live</span>

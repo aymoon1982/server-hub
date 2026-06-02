@@ -19,19 +19,23 @@ import {
 import { PowerMenu, DockerContainersTab, DockerImagesTab, StacksTab } from './features.jsx';
 import { CodeHubTab } from './code-hub.jsx';
 import { EnvManagerTab } from './env-manager.jsx';
+import {
+  LayoutDashboard, Gauge, Globe, Server, Container, SquareTerminal,
+  Sparkles, Share2, FolderOpen, FileCode, KeyRound,
+} from 'lucide-react';
 
 const TABS = [
-  { id: 'overview', label: 'Overview', glyph: '◇', section: 'system' },
-  { id: 'system',   label: 'System',   glyph: '⊟', section: 'system', badge: true },
-  { id: 'web',      label: 'Web UIs',  glyph: '▦', section: 'services' },
-  { id: 'backend',  label: 'Backend',  glyph: '⇆', section: 'services' },
-  { id: 'docker',   label: 'Docker',   glyph: '◈', section: 'services' },
-  { id: 'code',     label: 'Code',     glyph: '⌘', section: 'shell' },
-  { id: 'agents',   label: 'Agents',   glyph: '✦', section: 'services' },
-  { id: 'samba',    label: 'Samba',    glyph: '◫', section: 'storage' },
-  { id: 'files',    label: 'Files',    glyph: '▢', section: 'storage' },
-  { id: 'envfiles', label: 'Env',      glyph: '⊙', section: 'storage' },
-  { id: 'ssh',      label: 'SSH',      glyph: '⇄', section: 'shell' },
+  { id: 'overview', label: 'Overview', glyph: '◇', icon: LayoutDashboard, section: 'system' },
+  { id: 'system',   label: 'System',   glyph: '⊟', icon: Gauge,           section: 'system', badge: true },
+  { id: 'web',      label: 'Web UIs',  glyph: '▦', icon: Globe,           section: 'services' },
+  { id: 'backend',  label: 'Backend',  glyph: '⇆', icon: Server,          section: 'services' },
+  { id: 'docker',   label: 'Docker',   glyph: '◈', icon: Container,       section: 'services' },
+  { id: 'code',     label: 'Code',     glyph: '⌘', icon: SquareTerminal,  section: 'shell' },
+  { id: 'agents',   label: 'Agents',   glyph: '✦', icon: Sparkles,        section: 'services' },
+  { id: 'samba',    label: 'Samba',    glyph: '◫', icon: Share2,          section: 'storage' },
+  { id: 'files',    label: 'Files',    glyph: '▢', icon: FolderOpen,      section: 'storage' },
+  { id: 'envfiles', label: 'Env',      glyph: '⊙', icon: FileCode,        section: 'storage' },
+  { id: 'ssh',      label: 'SSH',      glyph: '⇄', icon: KeyRound,        section: 'shell' },
 ];
 
 const SECTIONS = [
@@ -46,7 +50,7 @@ const TWEAK_DEFAULTS = {
   "theme": "dark",
   "density": "comfortable",
   "cardStyle": "tile",
-  "accent": "#a78bfa",
+  "accent": "#d97757",
   "wallpaper": "none",
   "customWallpaperUrl": "",
   "wallpaperBlur": 0
@@ -59,11 +63,11 @@ const WALLPAPERS = {
 };
 
 const ACCENT_PRESETS = {
+  '#d97757': { h: 45, c: 0.13, l: 0.68 },   // Claude clay (default)
   '#a78bfa': { h: 285, c: 0.13, l: 0.66 },
   '#5cc8e2': { h: 220, c: 0.11, l: 0.74 },
   '#6dd49a': { h: 150, c: 0.11, l: 0.78 },
   '#f0c75a': { h: 78, c: 0.13, l: 0.82 },
-  '#f08a8a': { h: 18, c: 0.12, l: 0.72 },
 };
 const ACCENT_OPTS = Object.keys(ACCENT_PRESETS);
 
@@ -327,7 +331,7 @@ function Shell() {
   // Apply theme + accent + wallpaper vars
   useEffect(() => {
     const root = document.documentElement;
-    const a = ACCENT_PRESETS[t.accent] || ACCENT_PRESETS['#a78bfa'];
+    const a = ACCENT_PRESETS[t.accent] || ACCENT_PRESETS['#d97757'];
     root.style.setProperty('--accent-h', a.h);
     root.style.setProperty('--accent-c', a.c);
     root.style.setProperty('--accent-l', a.l);
@@ -439,7 +443,7 @@ function Shell() {
                     onClick={() => setActiveTab(tab.id)}
                     title={tab.label}
                   >
-                    <span className="nav-glyph">{tab.glyph}</span>
+                    <span className="nav-glyph">{tab.icon ? <tab.icon size={17} strokeWidth={1.75} /> : tab.glyph}</span>
                     <span className="nav-label">{tab.label}</span>
                     {counts[tab.id] !== '' && <span className={`nav-count ${tab.badge ? 'is-badge' : ''}`}>{counts[tab.id]}</span>}
                   </button>
@@ -519,7 +523,7 @@ function Shell() {
                 className={`tab-pill ${activeTab === tab.id ? 'is-active' : ''}`}
                 onClick={() => setActiveTab(tab.id)}
               >
-                <span className="nav-glyph">{tab.glyph}</span>
+                <span className="nav-glyph">{tab.icon ? <tab.icon size={18} strokeWidth={1.75} /> : tab.glyph}</span>
                 <span>{tab.label}</span>
                 {counts[tab.id] !== '' && <span className={`nav-count ${tab.badge ? 'is-badge' : ''}`}>{counts[tab.id]}</span>}
               </button>

@@ -65,7 +65,7 @@ export function TerminalPane({ id, cwd, agent, envCsv, active, onTitle, onRegist
       cursorBlink: true,
       fontFamily: 'ui-monospace, SFMono-Regular, Menlo, Consolas, monospace',
       fontSize: 13,
-      theme: { background: '#08080c', foreground: '#f3f4f6', cursor: '#a78bfa', selectionBackground: 'rgba(167, 139, 250, 0.2)' },
+      theme: { background: '#1f1e1d', foreground: '#faf9f5', cursor: '#d97757', selectionBackground: 'rgba(217, 119, 87, 0.25)' },
     });
     const fit = new FitAddon();
     term.loadAddon(fit);
@@ -215,7 +215,7 @@ export function TerminalPane({ id, cwd, agent, envCsv, active, onTitle, onRegist
   return (
     <div
       className="tp-wrap"
-      style={{ display: active ? 'flex' : 'none', flexDirection: 'column', width: '100%', height: '100%', background: '#08080c' }}
+      style={{ display: active ? 'flex' : 'none', flexDirection: 'column', width: '100%', height: '100%', background: '#1f1e1d' }}
     >
       <div ref={containerRef} className="tp-term-host" style={{ flex: 1, minHeight: 0, width: '100%' }} />
       <TerminalKeyBar onKey={sendSeq} ctrlOn={ctrlOn} onToggleCtrl={toggleCtrl} visible={active && kbFocused} />
