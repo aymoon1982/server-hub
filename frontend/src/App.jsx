@@ -610,7 +610,7 @@ function Shell() {
             <span className="page-sub">{pageSub(activeTab, hostName, hostUptime, updateCount)}</span>
           </div>
         )}
-        {activeTab !== 'code' && <ErrorBoundary>{renderTab()}</ErrorBoundary>}
+        {activeTab !== 'code' && <ErrorBoundary key={activeTab}>{renderTab()}</ErrorBoundary>}
         <div style={{ display: activeTab === 'code' ? 'contents' : 'none' }}>
           <CodeHubTab isVisible={activeTab === 'code'} />
         </div>

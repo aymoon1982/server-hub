@@ -200,7 +200,13 @@ function Overview({ onNav }) {
       try {
         const res = await axios.get('/api/weather', { params: weatherCity ? { city: weatherCity } : {} });
         if (!active) return;
-        setWeatherData(res.data);
+        const d = res.data;
+        // Guard against an SPA-fallback returning index.html (string) when the
+        // /api/weather route is missing on an older/un-restarted backend.
+        if (!d || typeof d !== 'object' || typeof d.desc !== 'string') {
+          throw new Error('Invalid weather payload');
+        }
+        setWeatherData(d);
       } catch (e) {
         if (!active) return;
         setWeatherData({
@@ -387,13 +393,14 @@ function Overview({ onNav }) {
   const renderWidget = (id) => {
     switch (id) {
       case 'clock_weather': {
-        const wd = weatherData;
+        const wd = (weatherData && typeof weatherData.desc === 'string') ? weatherData : null;
+        const dsc = wd ? wd.desc.toLowerCase() : '';
         const icon = wd ? (
-          wd.desc.toLowerCase().includes('sun') || wd.desc.toLowerCase().includes('clear') ? '☀️'
-          : wd.desc.toLowerCase().includes('cloud') ? '⛅'
-          : wd.desc.toLowerCase().includes('rain') || wd.desc.toLowerCase().includes('drizzle') ? '🌧️'
-          : wd.desc.toLowerCase().includes('snow') ? '🌨️'
-          : wd.desc.toLowerCase().includes('thunder') ? '⛈️'
+          dsc.includes('sun') || dsc.includes('clear') ? '☀️'
+          : dsc.includes('cloud') ? '⛅'
+          : dsc.includes('rain') || dsc.includes('drizzle') ? '🌧️'
+          : dsc.includes('snow') ? '🌨️'
+          : dsc.includes('thunder') ? '⛈️'
           : '🌫️'
         ) : '';
         return (
