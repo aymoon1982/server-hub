@@ -1326,7 +1326,7 @@ const KNOWN_AGENTS = [
       jobArgs: (t) => ({ args: ['--dangerously-skip-permissions', '--print', t], stdin: null }) },
     { id: 'gemini',       label: 'Gemini CLI',             cmd: 'gemini',      vendor: 'Google',
       jobArgs: (t) => ({ args: ['-p', t, '--yolo'],                             stdin: null }) },
-    { id: 'antigravity',  label: 'Antigravity (agy)',      cmd: 'agy',         vendor: 'Google DeepMind',
+    { id: 'antigravity',  label: 'Antigravity (agy)',      cmd: 'agy',         vendor: 'Google DeepMind', altCmds: ['antigravity'],
       jobArgs: (t) => ({ args: ['--dangerously-skip-permissions', '--print', t], stdin: null }) },
     { id: 'codex',        label: 'OpenAI Codex CLI',       cmd: 'codex',       vendor: 'OpenAI',
       jobArgs: (t) => ({ args: ['exec', '--dangerously-bypass-approvals-and-sandbox', t], stdin: null }) },
@@ -1346,7 +1346,7 @@ const KNOWN_AGENTS = [
       jobArgs: (t) => ({ args: [],                                              stdin: t }) },
     { id: 'cline',        label: 'Cline',                  cmd: 'cline',       vendor: 'Cline',
       jobArgs: (t) => ({ args: [],                                              stdin: t }) },
-    { id: 'qwen-code',    label: 'Qwen Code',              cmd: 'qwen-code',   vendor: 'Alibaba',
+    { id: 'qwen-code',    label: 'Qwen Code',              cmd: 'qwen-code',   vendor: 'Alibaba', altCmds: ['qwen'],
       jobArgs: (t) => ({ args: ['--dangerously-skip-permissions', '--print', t], stdin: null }) },
     { id: 'ollama',       label: 'Ollama',                 cmd: 'ollama',      vendor: 'Ollama',
       jobArgs: (t) => {
@@ -1368,18 +1368,73 @@ const FALLBACK_SEARCH_DIRS = [
     '/usr/bin',
 ];
 
+// Expand a single `*` segment in a path into all matching subdirectories.
+// Used to cover version-manager layouts like ~/.nvm/versions/node/*/bin.
+function globOnce(pattern) {
+    const idx = pattern.indexOf('*');
+    if (idx === -1) return [pattern];
+    const before = pattern.slice(0, idx);
+    const after = pattern.slice(idx + 1);
+    const baseDir = before.endsWith('/') ? before.slice(0, -1) : path.dirname(before);
+    let entries = [];
+    try { entries = fs.readdirSync(baseDir); } catch { return []; }
+    return entries.map(e => path.join(baseDir, e) + after);
+}
+
+// Every place a coding-agent binary might land, across package managers,
+// version managers and OS install methods. Globs (nvm/fnm/n) are expanded.
+function homeDirsFor(user) {
+    const home = user === 'root' ? '/root' : `/home/${user}`;
+    return [
+        // system
+        '/usr/local/sbin', '/usr/local/bin', '/usr/sbin', '/usr/bin', '/sbin', '/bin',
+        '/snap/bin', '/var/lib/flatpak/exports/bin',
+        // homebrew
+        '/opt/homebrew/bin', '/home/linuxbrew/.linuxbrew/bin', `${home}/.linuxbrew/bin`,
+        // generic user bins
+        `${home}/.local/bin`, `${home}/bin`, `${home}/.local/share/../bin`,
+        // rust / go / deno / bun
+        `${home}/.cargo/bin`, `${home}/go/bin`, `${home}/.deno/bin`, `${home}/.bun/bin`,
+        // npm-style globals
+        `${home}/.npm-global/bin`, `${home}/.npm-packages/bin`, `${home}/node_modules/.bin`,
+        // pnpm
+        `${home}/.local/share/pnpm`, `${home}/Library/pnpm`,
+        // yarn (classic + berry global)
+        `${home}/.yarn/bin`, `${home}/.config/yarn/global/node_modules/.bin`,
+        // node version managers
+        `${home}/.volta/bin`,
+        `${home}/.nvm/versions/node/*/bin`,
+        `${home}/.fnm/node-versions/*/installation/bin`,
+        `${home}/.local/share/fnm/node-versions/*/installation/bin`,
+        `${home}/n/bin`, '/usr/local/n/versions/node/*/bin',
+        // polyglot version managers (shims)
+        `${home}/.asdf/shims`, `${home}/.asdf/bin`,
+        `${home}/.local/share/mise/shims`,
+        // python toolchains
+        `${home}/.pyenv/shims`, `${home}/.rye/shims`, `${home}/.pixi/bin`,
+    ];
+}
+
+function staticSearchDirs(user) {
+    const raw = [];
+    for (const p of homeDirsFor(user)) for (const d of globOnce(p)) raw.push(d);
+    // The server runs as root, so agents installed under /root are reachable too.
+    if (user !== 'root') {
+        for (const p of homeDirsFor('root')) for (const d of globOnce(p)) raw.push(d);
+    }
+    const seen = new Set();
+    const out = [];
+    for (const d of raw) { if (d && !seen.has(d)) { seen.add(d); out.push(d); } }
+    return out;
+}
+
 // Resolve a command name to an absolute path by scanning known dirs synchronously.
 // sudo uses its own secure_path which doesn't include user dirs like ~/.local/bin or
 // /home/linuxbrew, so we must resolve the full path before handing it to spawn+sudo.
 function resolveCmdSync(cmd) {
     if (path.isAbsolute(cmd)) return cmd;
-    const searchDirs = [
-        ...FALLBACK_SEARCH_DIRS,
-        `/home/${TARGET_USER}/.local/bin`,
-        `/home/${TARGET_USER}/.cargo/bin`,
-        `/home/${TARGET_USER}/bin`,
-        `/root/.local/bin`,
-    ];
+    const envDirs = (process.env.PATH || '').split(':').filter(Boolean);
+    const searchDirs = [...envDirs, ...staticSearchDirs(TARGET_USER)];
     for (const dir of searchDirs) {
         try {
             const full = path.join(dir, cmd);
@@ -1427,11 +1482,29 @@ const runAsUserDirect = (user, cmd, args = [], timeoutMs = 2000) => new Promise(
 
 const getUserPathDirs = async (user) => {
     const raw = await runAsUser(user, 'echo "$PATH"', 1500);
-    const dirs = raw.trim().split(':').filter(Boolean);
-    for (const fallback of FALLBACK_SEARCH_DIRS) {
-        if (!dirs.includes(fallback)) dirs.push(fallback);
-    }
-    return dirs;
+    const pathDirs = raw.trim().split(':').filter(Boolean);
+    const all = [...pathDirs, ...staticSearchDirs(user)];
+    const seen = new Set();
+    const out = [];
+    for (const d of all) { if (d && !seen.has(d)) { seen.add(d); out.push(d); } }
+    return out;
+};
+
+// Method B: ask the user's login shell where a command resolves. Catches
+// shims, wrapper functions and anything on PATH that a static dir scan misses.
+const whichViaShell = async (user, name) => {
+    const out = (await runAsUser(user, `command -v ${shellQuote(name)} 2>/dev/null`, 1500)).trim();
+    const line = out.split('\n').map(s => s.trim()).find(s => s.startsWith('/'));
+    if (!line) return null;
+    try {
+        const st = fs.statSync(line);
+        if (st.isFile() && (st.mode & 0o111)) {
+            let real = line;
+            try { real = fs.realpathSync(line); } catch (e) {}
+            return { path: line, realPath: real };
+        }
+    } catch (e) {}
+    return null;
 };
 
 const findExecutable = (dirs, name) => {
@@ -1449,38 +1522,66 @@ const findExecutable = (dirs, name) => {
     return null;
 };
 
+// Try several conventional version flags — agents are inconsistent here.
+const VERSION_FLAGS = [['--version'], ['-v'], ['version'], ['-V']];
 const probeAgentVersion = async (user, absPath) => {
-    const out = await runAsUserDirect(user, absPath, ['--version'], 4000);
-    if (!out) return null;
-    const m = out.match(/\d+\.\d+(?:\.\d+)?(?:[\w.+-]+)?/);
-    return m ? m[0] : null;
+    for (const flags of VERSION_FLAGS) {
+        const out = await runAsUserDirect(user, absPath, flags, 3000);
+        if (out) {
+            const m = out.match(/\d+\.\d+(?:\.\d+)?(?:[\w.+-]+)?/);
+            if (m) return m[0];
+        }
+    }
+    return null;
 };
 
 const discoverAgentsRaw = async () => {
     const dirs = await getUserPathDirs(TARGET_USER);
-    const seen = new Map();
+    const seen = new Map();   // realPath -> record
     const found = [];
-    for (const agent of KNOWN_AGENTS) {
-        const hit = findExecutable(dirs, agent.cmd);
-        if (!hit) continue;
+
+    const register = (agent, hit, source) => {
         if (seen.has(hit.realPath)) {
             const existing = seen.get(hit.realPath);
-            if (!existing.aliases.includes(agent.cmd)) existing.aliases.push(agent.cmd);
-            continue;
+            if (existing.id !== agent.id && !existing.aliases.includes(agent.cmd)) {
+                existing.aliases.push(agent.cmd);
+            }
+            return;
         }
-        const record = { ...agent, path: hit.path, realPath: hit.realPath, aliases: [], version: null };
+        const record = { ...agent, path: hit.path, realPath: hit.realPath, source, aliases: [], version: null };
+        delete record.jobArgs; delete record.altCmds; // not serializable / not needed client-side
         seen.set(hit.realPath, record);
         found.push(record);
+    };
+
+    for (const agent of KNOWN_AGENTS) {
+        const names = [agent.cmd, ...(agent.altCmds || [])];
+        let hit = null, source = '';
+        // Method A: scan every known install dir
+        for (const name of names) {
+            hit = findExecutable(dirs, name);
+            if (hit) { source = path.dirname(hit.path); break; }
+        }
+        // Method B: fall back to the login shell's resolver (shims, functions, PATH)
+        if (!hit) {
+            for (const name of names) {
+                hit = await whichViaShell(TARGET_USER, name);
+                if (hit) { source = 'PATH'; break; }
+            }
+        }
+        if (hit) register(agent, hit, source);
     }
+
     await Promise.all(found.map(async (a) => {
         a.version = await probeAgentVersion(TARGET_USER, a.path);
     }));
     return found;
 };
 
-const discoverAgents = async () => {
+const discoverAgents = async (force = false) => {
     const now = Date.now();
-    if (agentCache && (now - agentCacheTime) < AGENT_CACHE_TTL_MS) return agentCache;
+    if (!force && agentCache && (now - agentCacheTime) < AGENT_CACHE_TTL_MS) return agentCache;
+    if (force) { agentCache = null; agentCacheTime = 0; }
     if (inflightAgentScan) return inflightAgentScan;
     inflightAgentScan = (async () => {
         try {
@@ -1498,7 +1599,8 @@ const discoverAgents = async () => {
 
 app.get('/api/agents', async (req, res) => {
     try {
-        const agents = await discoverAgents();
+        const force = req.query.refresh === '1' || req.query.refresh === 'true';
+        const agents = await discoverAgents(force);
         res.json({ user: TARGET_USER, agents });
     } catch (e) {
         res.status(500).json({ error: 'Failed to discover agents' });

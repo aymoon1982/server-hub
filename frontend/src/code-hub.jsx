@@ -44,6 +44,7 @@ export function CodeHubTab({ isVisible = true }) {
   const [activeWsId, setActiveWsIdRaw]      = useState(() => localStorage.getItem(ACTIVE_KEY) || '');
   const [selectedAgentId, setSelectedAgentId] = useState('shell');
   const [runningCount, setRunningCount]     = useState(0);
+  const [rescanning, setRescanning]         = useState(false);
 
   const setActiveWsId = useCallback((id) => {
     setActiveWsIdRaw(id);
@@ -144,6 +145,22 @@ export function CodeHubTab({ isVisible = true }) {
   }, []);
 
   useEffect(() => { loadData(); }, [loadData]);
+
+  // Force a fresh scan for agent binaries (bypasses the backend cache)
+  const rescanAgents = useCallback(async () => {
+    setRescanning(true);
+    try {
+      const r = await axios.get('/api/agents', { params: { refresh: 1 } });
+      if (!mountedRef.current) return;
+      const raw = r.data?.agents || [];
+      setAgents([{ id: 'shell', label: 'Shell', cmd: 'shell', vendor: 'System', version: '' }, ...raw]);
+      window.UI?.toast?.({ kind: 'ok', title: 'Rescanned', body: `${raw.length} agent${raw.length === 1 ? '' : 's'} detected` });
+    } catch (e) {
+      window.UI?.toast?.({ kind: 'err', title: 'Rescan failed', body: e.response?.data?.error || e.message });
+    } finally {
+      if (mountedRef.current) setRescanning(false);
+    }
+  }, []);
 
   // ── Terminal management ────────────────────────────────────────────────────
   const persistSessions = useCallback((list) => {
@@ -517,10 +534,19 @@ export function CodeHubTab({ isVisible = true }) {
             </button>
             {showAgPop && (
               <div className="ws-popover">
-                <div className="ws-popover-header">Coding Agent</div>
+                <div className="ws-popover-header ws-popover-header--row">
+                  <span>Coding Agent</span>
+                  <button
+                    className={`ws-rescan-btn${rescanning ? ' is-spinning' : ''}`}
+                    onClick={(e) => { e.stopPropagation(); rescanAgents(); }}
+                    disabled={rescanning}
+                    title="Rescan for installed agents"
+                  >↻ Rescan</button>
+                </div>
                 <div className="ws-popover-body">
                   {agents.map(a => (
                     <div key={a.id} className={`agent-card${selectedAgentId === a.id ? ' is-selected' : ''}`}
+                      title={a.realPath || a.path || a.cmd}
                       onClick={() => { setSelectedAgentId(a.id); setShowAgPop(false); }}>
                       <div className="agent-glyph">{AGENT_GLYPHS[a.id] || '✦'}</div>
                       <div className="agent-info">

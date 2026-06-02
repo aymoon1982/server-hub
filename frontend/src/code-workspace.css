@@ -430,6 +430,29 @@
   color: var(--accent);
   flex-shrink: 0;
 }
+.ws-popover-header--row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+.ws-rescan-btn {
+  background: var(--accent-soft);
+  border: 1px solid var(--accent-line);
+  color: var(--accent);
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  padding: 3px 8px;
+  border-radius: 5px;
+  cursor: pointer;
+  text-transform: none;
+  transition: background 0.15s;
+}
+.ws-rescan-btn:hover:not(:disabled) { background: var(--accent-line); }
+.ws-rescan-btn:disabled { opacity: 0.6; cursor: default; }
+.ws-rescan-btn.is-spinning { animation: rescanPulse 0.9s ease-in-out infinite; }
+@keyframes rescanPulse { 50% { opacity: 0.5; } }
 
 .ws-popover-body {
   flex: 1;
