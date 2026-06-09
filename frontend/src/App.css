@@ -3058,8 +3058,10 @@ input, textarea, select { font-family: inherit; font-size: inherit; color: var(-
 
   /* xterm: prevent iOS auto-zoom on focus (16px is the iOS no-zoom threshold) */
   .xterm-helper-textarea { font-size: 16px !important; }
-  .xterm .xterm-screen,
-  .xterm .xterm-viewport { touch-action: manipulation; }
+  /* Allow the JS touch-scroll handler to receive events without interference.
+     pan-y on the viewport lets two-finger scroll fall through to the DOM. */
+  .xterm .xterm-screen { touch-action: pan-y; }
+  .xterm .xterm-viewport { touch-action: pan-y; -webkit-overflow-scrolling: touch; }
 
   /* Session dock — minimized terminal must not overlap bottom tab bar */
   .sess-dock {

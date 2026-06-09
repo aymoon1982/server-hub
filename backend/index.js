@@ -83,6 +83,12 @@ const newManualId = () => `m-${Date.now().toString(36)}-${Math.random().toString
 
 app.use(cors());
 app.use((req, res, next) => {
+    // frame-ancestors must be an HTTP header — <meta> CSP ignores it per spec.
+    res.setHeader('X-Frame-Options', 'DENY');
+    res.setHeader('Content-Security-Policy', "frame-ancestors 'none'");
+    next();
+});
+app.use((req, res, next) => {
     console.log(`[HTTP] ${req.method} ${req.url}`);
     next();
 });
@@ -199,23 +205,46 @@ const extractFaviconHref = (html) => {
     return null;
 };
 
-const probeProtocol = async (protocol, port) => {
+// Known paths that signal a web UI even when the root returns non-HTML (JSON/text).
+// Checked only when the root probe returns a non-HTML 2xx, saving probe time on
+// services whose root is already HTML.
+const WEB_UI_PATHS = ['/ui', '/dashboard', '/web', '/app', '/admin', '/console', '/webui'];
+
+const probeProtocol = async (protocol, port, host = '127.0.0.1') => {
     const cfg = {
-        timeout: 400,
+        timeout: 1500,
         validateStatus: () => true,
-        maxRedirects: 2,
-        headers: { Accept: 'text/html', 'User-Agent': 'ServiceProbe/1.0' },
+        maxRedirects: 3,
+        headers: { Accept: 'text/html,application/xhtml+xml,*/*', 'User-Agent': 'ServiceProbe/1.0' },
     };
     if (protocol === 'https') cfg.httpsAgent = insecureHttpsAgent;
+    const base = `${protocol}://${host}:${port}`;
     try {
-        const response = await axios.get(`${protocol}://127.0.0.1:${port}`, cfg);
+        const response = await axios.get(base, cfg);
         const contentType = response.headers['content-type'] || '';
-        const isWebUi = contentType.includes('text/html') && response.status >= 200 && response.status < 400;
-        if (isWebUi && typeof response.data === 'string') {
+        const ok = response.status >= 200 && response.status < 400;
+        if (ok && contentType.includes('text/html') && typeof response.data === 'string') {
             const titleMatch = response.data.match(/<title>(.*?)<\/title>/i);
             const title = titleMatch?.[1]?.trim() || null;
             const faviconHref = extractFaviconHref(response.data);
             return { isWebUi: true, status: response.status, protocol, title, faviconHref };
+        }
+        // Root returned non-HTML (JSON/text) — probe known web-UI paths before giving up.
+        if (ok) {
+            for (const uiPath of WEB_UI_PATHS) {
+                try {
+                    const r2 = await axios.get(`${base}${uiPath}`, { ...cfg, timeout: 800 });
+                    const ct2 = r2.headers['content-type'] || '';
+                    if (ct2.includes('text/html') && r2.status >= 200 && r2.status < 400 && typeof r2.data === 'string') {
+                        const titleMatch = r2.data.match(/<title>(.*?)<\/title>/i);
+                        return {
+                            isWebUi: true, status: r2.status, protocol,
+                            title: titleMatch?.[1]?.trim() || null,
+                            faviconHref: extractFaviconHref(r2.data),
+                        };
+                    }
+                } catch (_) {}
+            }
         }
         return { isWebUi: false, status: response.status, protocol: null, title: null, faviconHref: null };
     } catch (e) {
@@ -223,12 +252,20 @@ const probeProtocol = async (protocol, port) => {
     }
 };
 
-const probePort = async (port) => {
+const probePort = async (port, bindHost = '127.0.0.1') => {
     if (NON_HTTP_PORTS.has(port)) {
         return { isWebUi: false, status: 'skipped', protocol: null, title: null, faviconHref: null };
     }
+    // Resolve which host to probe: if the service is bound to a specific non-loopback
+    // address (LAN or Tailscale), probing 127.0.0.1 would always fail.
+    const probeHost = (bindHost === '0.0.0.0' || bindHost === '::' || bindHost === '*' || !bindHost)
+        ? '127.0.0.1'
+        : bindHost;
     // Probe http and https in parallel — half the latency vs sequential
-    const [httpRes, httpsRes] = await Promise.all([probeProtocol('http', port), probeProtocol('https', port)]);
+    const [httpRes, httpsRes] = await Promise.all([
+        probeProtocol('http', port, probeHost),
+        probeProtocol('https', port, probeHost),
+    ]);
     if (httpRes?.isWebUi) return httpRes;
     if (httpsRes?.isWebUi) return httpsRes;
     if (httpRes) return httpRes;
@@ -384,10 +421,17 @@ const discoverServicesRaw = async () => {
     const ssLines = ssOutput.split('\n').slice(1);
     const pendingProcessLookups = [];
     for (const line of ssLines) {
-        const portMatch = line.match(/:(\d+)\s+/);
         const processMatch = line.match(/users:\(\("([^"]+)",(?:.*?)pid=(\d+)/);
-        if (!portMatch) continue;
-        const port = parseInt(portMatch[1]);
+        // Extract local address:port from column 4 (0-indexed col 3 after splitting on whitespace).
+        // ss format: State Recv-Q Send-Q Local-Addr:Port Peer-Addr:Port [Process]
+        const cols = line.trim().split(/\s+/);
+        const localAddrPort = cols[3];
+        if (!localAddrPort) continue;
+        const lastColon = localAddrPort.lastIndexOf(':');
+        if (lastColon === -1) continue;
+        const bindHost = localAddrPort.substring(0, lastColon);  // e.g. 10.1.1.100
+        const port = parseInt(localAddrPort.substring(lastColon + 1));
+        if (!port || isNaN(port)) continue;
         if (seenPorts.has(port) || port === parseInt(PORT)) continue;
 
         let processName = 'Unknown Process';
@@ -404,7 +448,7 @@ const discoverServicesRaw = async () => {
         if (processName && /^[a-z]/.test(processName)) processName = processName.charAt(0).toUpperCase() + processName.slice(1);
         if (port === 80 || port === parseInt(PORT)) processName = 'Server Hub';
 
-        const service = { name: processName, port, type: 'process', pid, usage: { cpu: 0, mem: 0 } };
+        const service = { name: processName, port, type: 'process', pid, usage: { cpu: 0, mem: 0 }, bindHost };
         services.push(service);
         seenPorts.add(port);
         if (pid) pendingProcessLookups.push(service);
@@ -421,7 +465,7 @@ const discoverServicesRaw = async () => {
 
     const probed = await Promise.all(services.map(async (s) => ({
         ...s,
-        ...(await probePort(s.port)),
+        ...(await probePort(s.port, s.bindHost)),
     })));
 
     serviceProcessMap = newMap;
@@ -1238,40 +1282,58 @@ app.get('/api/health', async (req, res) => {
     });
 });
 
-// Weather proxy — fetches wttr.in server-side (avoids the frontend CSP block).
-// With no `city`, wttr.in geolocates from the request IP (the server's public
-// IP), which for a home/LAN server matches the user's location.
+// Weather proxy — fetches wttr.in server-side (avoids CSP restrictions).
+// Priority: ?city= (manual) > ?lat=&lon= (browser GPS) > server IP fallback.
 let weatherCache = { key: '', at: 0, data: null };
 app.get('/api/weather', async (req, res) => {
     const city = (req.query.city || '').toString().trim();
-    const key = city.toLowerCase();
+    const lat  = parseFloat(req.query.lat);
+    const lon  = parseFloat(req.query.lon);
+
+    // Build cache key and wttr.in location segment.
+    let location = '';
+    let key = '';
+    if (city) {
+        location = encodeURIComponent(city);
+        key = `city:${city.toLowerCase()}`;
+    } else if (!isNaN(lat) && !isNaN(lon)) {
+        // wttr.in accepts coordinates as "-25.5,28.1"
+        location = `${lat.toFixed(4)},${lon.toFixed(4)}`;
+        // Round to ~1km grid so nearby refreshes hit the same cache slot.
+        key = `geo:${lat.toFixed(2)},${lon.toFixed(2)}`;
+    } else {
+        // No location from client — fall back to server IP geolocation.
+        key = 'ip';
+    }
+
     const now = Date.now();
-    // 10-minute cache per location to be kind to wttr.in
     if (weatherCache.data && weatherCache.key === key && (now - weatherCache.at) < 600000) {
         return res.json(weatherCache.data);
     }
     try {
-        const target = `https://wttr.in/${encodeURIComponent(city)}?format=j1`;
+        const target = `https://wttr.in/${location}?format=j1`;
         const r = await axios.get(target, {
             timeout: 8000,
             headers: { 'User-Agent': 'curl/8.0', 'Accept-Language': 'en' },
         });
         const current = r.data?.current_condition?.[0];
-        const area = r.data?.nearest_area?.[0];
+        const area    = r.data?.nearest_area?.[0];
         if (!current) return res.status(502).json({ error: 'No weather data' });
         const out = {
-            temp: current.temp_C,
+            temp:      current.temp_C,
             feelsLike: current.FeelsLikeC,
-            desc: current.weatherDesc?.[0]?.value || 'Unknown',
-            humidity: current.humidity,
-            wind: current.windspeedKmph,
-            city: area?.areaName?.[0]?.value || city || 'Here',
-            region: area?.region?.[0]?.value || '',
-            country: area?.country?.[0]?.value || '',
+            desc:      current.weatherDesc?.[0]?.value || 'Unknown',
+            humidity:  current.humidity,
+            wind:      current.windspeedKmph,
+            city:      area?.areaName?.[0]?.value || city || 'Here',
+            region:    area?.region?.[0]?.value || '',
+            country:   area?.country?.[0]?.value || '',
         };
         weatherCache = { key, at: now, data: out };
         res.json(out);
     } catch (e) {
+        // Return stale cache rather than an error if we have any previous data.
+        if (weatherCache.data) return res.json({ ...weatherCache.data, stale: true });
         res.status(502).json({ error: e.message || 'Weather fetch failed' });
     }
 });

@@ -190,33 +190,48 @@ function Overview({ onNav }) {
     return () => clearInterval(interval);
   }, []);
 
-  // ── Weather state — empty city ⇒ backend geolocates from the public IP
+  // ── Weather state
   const [weatherCity, setWeatherCity] = useState(() => localStorage.getItem('dashboard_weather_city') || '');
   const [weatherData, setWeatherData] = useState(null);
   const [editingWeatherCity, setEditingWeatherCity] = useState(false);
   const [weatherInput, setWeatherInput] = useState(weatherCity);
+
+  // Get browser geolocation once and cache it for the session.
+  const geoRef = useRef(null);
+  const getGeo = () => new Promise((resolve) => {
+    if (geoRef.current) return resolve(geoRef.current);
+    if (!navigator.geolocation) return resolve(null);
+    navigator.geolocation.getCurrentPosition(
+      (pos) => { geoRef.current = { lat: pos.coords.latitude.toFixed(4), lon: pos.coords.longitude.toFixed(4) }; resolve(geoRef.current); },
+      () => resolve(null),
+      { timeout: 5000, maximumAge: 3600000 }
+    );
+  });
+
   useEffect(() => {
     let active = true;
     const fetchWeather = async () => {
       try {
-        const res = await axios.get('/api/weather', { params: weatherCity ? { city: weatherCity } : {} });
+        // Build params: manual city > browser GPS > server IP fallback.
+        let params = {};
+        if (weatherCity) {
+          params = { city: weatherCity };
+        } else {
+          const geo = await getGeo();
+          if (geo) params = { lat: geo.lat, lon: geo.lon };
+          // else: no params → backend uses server's public IP (last resort)
+        }
+        const res = await axios.get('/api/weather', { params, timeout: 10000 });
         if (!active) return;
         const d = res.data;
-        // Guard against an SPA-fallback returning index.html (string) when the
-        // /api/weather route is missing on an older/un-restarted backend.
-        if (!d || typeof d !== 'object' || typeof d.desc !== 'string') {
-          throw new Error('Invalid weather payload');
-        }
+        if (!d || typeof d !== 'object' || typeof d.desc !== 'string') throw new Error('bad payload');
         setWeatherData(d);
       } catch (e) {
         if (!active) return;
-        setWeatherData({
-          temp: '22',
-          desc: 'Partly Cloudy',
-          humidity: '52',
-          wind: '10',
-          city: weatherCity || 'Unavailable',
-          mock: true
+        // Keep last known good data if available; only show error state on first load.
+        setWeatherData(prev => prev && !prev.mock ? prev : {
+          temp: '--', desc: 'Unavailable', humidity: '--', wind: '--',
+          city: weatherCity || 'Unknown', mock: true,
         });
       }
     };
@@ -2401,6 +2416,90 @@ function BackupsManagerTab() {
   );
 }
 
+// ---------- FOLDER PICKER MODAL ----------
+function FolderPickerModal({ title, initialPath, showFileName, defaultFileName, onConfirm, onCancel }) {
+  const [path, setPath] = useState(initialPath || '/');
+  const [folders, setFolders] = useState([]);
+  const [loading, setLoading] = useState(false);
+  const [fileName, setFileName] = useState(defaultFileName || '');
+
+  const browse = async (p) => {
+    setLoading(true);
+    try {
+      const res = await axios.get('/api/samba/browse', { params: { path: p } });
+      setPath(res.data.currentPath);
+      setFolders(res.data.folders || []);
+    } catch (e) {
+      window.UI?.toast({ kind: 'err', title: 'Browse error', body: e.message });
+    } finally { setLoading(false); }
+  };
+
+  useEffect(() => { browse(initialPath || '/'); }, []);
+
+  const parts = path.split('/').filter(Boolean);
+
+  return (
+    <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.55)', zIndex: 9999, display: 'flex', alignItems: 'center', justifyContent: 'center' }}
+      onClick={e => { if (e.target === e.currentTarget) onCancel(); }}>
+      <div style={{ background: 'var(--bg)', border: '1px solid var(--line)', borderRadius: 10, width: 480, maxWidth: '92vw', maxHeight: '80vh', display: 'flex', flexDirection: 'column', overflow: 'hidden', boxShadow: '0 8px 32px rgba(0,0,0,0.35)' }}>
+        <div style={{ padding: '12px 16px', borderBottom: '1px solid var(--line)', fontWeight: 600, fontSize: 14 }}>{title}</div>
+
+        {/* Breadcrumbs */}
+        <div style={{ display: 'flex', alignItems: 'center', gap: 2, padding: '6px 12px', borderBottom: '1px solid var(--line)', flexWrap: 'wrap', fontSize: 12, background: 'var(--bg-2)' }}>
+          <button type="button" className="btn-ghost sm" style={{ fontFamily: 'var(--font-mono)', padding: '2px 6px' }} onClick={() => browse('/')}>/</button>
+          {parts.map((part, i) => (
+            <React.Fragment key={i}>
+              <span style={{ color: 'var(--text-3)', userSelect: 'none' }}>›</span>
+              <button type="button" className="btn-ghost sm" style={{ fontFamily: 'var(--font-mono)', padding: '2px 6px' }}
+                onClick={() => browse('/' + parts.slice(0, i + 1).join('/'))}>{part}</button>
+            </React.Fragment>
+          ))}
+        </div>
+
+        {/* Folder list */}
+        <div style={{ flex: 1, overflowY: 'auto', minHeight: 180 }}>
+          {loading && <div style={{ padding: 24, textAlign: 'center', color: 'var(--text-3)', fontSize: 13 }}>Loading…</div>}
+          {!loading && folders.length === 0 && <div style={{ padding: 24, textAlign: 'center', color: 'var(--text-3)', fontSize: 12 }}>No subfolders</div>}
+          {!loading && folders.map(f => (
+            <div key={f.name} onClick={() => browse(f.path)}
+              style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '7px 16px', cursor: 'pointer', fontSize: 13, transition: 'background 0.1s' }}
+              onMouseEnter={e => e.currentTarget.style.background = 'var(--hover)'}
+              onMouseLeave={e => e.currentTarget.style.background = 'transparent'}>
+              <span>📁</span>
+              <span>{f.name}</span>
+            </div>
+          ))}
+        </div>
+
+        {/* Current destination display */}
+        <div style={{ padding: '6px 16px', borderTop: '1px solid var(--line)', fontSize: 11, color: 'var(--text-3)', fontFamily: 'var(--font-mono)', background: 'var(--bg-2)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+          → {path}
+        </div>
+
+        {/* Filename input (copy only) */}
+        {showFileName && (
+          <div style={{ padding: '8px 16px', borderTop: '1px solid var(--line)', display: 'flex', alignItems: 'center', gap: 8 }}>
+            <span style={{ fontSize: 12, color: 'var(--text-2)', flexShrink: 0 }}>Name:</span>
+            <input autoFocus value={fileName} onChange={e => setFileName(e.target.value)}
+              style={{ flex: 1, background: 'var(--bg)', border: '1px solid var(--line)', padding: '4px 8px', borderRadius: 4, color: 'inherit', fontSize: 12, fontFamily: 'var(--font-mono)' }}
+              onKeyDown={e => { if (e.key === 'Enter' && fileName.trim()) onConfirm(path, fileName.trim()); if (e.key === 'Escape') onCancel(); }} />
+          </div>
+        )}
+
+        {/* Footer */}
+        <div style={{ padding: '10px 16px', borderTop: '1px solid var(--line)', display: 'flex', justifyContent: 'flex-end', gap: 8 }}>
+          <button type="button" className="btn-ghost sm" onClick={onCancel}>Cancel</button>
+          <button type="button" className="btn-accent sm"
+            onClick={() => onConfirm(path, showFileName ? fileName.trim() : undefined)}
+            disabled={showFileName && !fileName.trim()}>
+            {showFileName ? 'Copy here' : 'Select'}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 // ---------- FILES ----------
 function FilesTab() {
   const [subTab, setSubTab] = useState('explorer'); // explorer, backups
@@ -2413,6 +2512,8 @@ function FilesTab() {
   const [viewFile, setViewFile] = useState(null);
   const [viewLoading, setViewLoading] = useState(false);
   const [op, setOp] = useState(null);
+  const [folderPicker, setFolderPicker] = useState(null);
+  const [fileOpProgress, setFileOpProgress] = useState(null); // { label, name, current, total }
   const fileInputRef = useRef(null);
   const [uploadProgress, setUploadProgress] = useState(null);
 
@@ -2799,23 +2900,60 @@ function FilesTab() {
     fetchDir(currentPath);
   };
 
-  const bulkMoveOrCopy = async (action) => {
+  const bulkMoveOrCopy = (action) => {
     const paths = Array.from(multiSelected);
     if (paths.length === 0) return;
-    const dest = prompt(`Destination directory for ${paths.length} item(s):`, currentPath);
-    if (!dest) return;
-    let failures = 0;
-    for (const p of paths) {
-      const base = p.split('/').pop();
-      const to = dest.replace(/\/$/, '') + '/' + base;
-      try {
-        await axios.post(action === 'move' ? '/api/files/move' : '/api/files/copy', { from: p, to });
-      } catch (e) { failures++; }
+    setFolderPicker({
+      action: action === 'move' ? 'bulkMove' : 'bulkCopy',
+      paths,
+      title: `${action === 'move' ? 'Move' : 'Copy'} ${paths.length} item${paths.length === 1 ? '' : 's'} to…`,
+    });
+  };
+
+  const confirmFolderPick = async (destFolder, finalName) => {
+    const fp = folderPicker;
+    setFolderPicker(null);
+    if (!fp) return;
+    const base = destFolder.replace(/\/$/, '');
+    const isCopy = fp.action === 'copy' || fp.action === 'bulkCopy';
+    const opLabel = isCopy ? 'Copying' : 'Moving';
+    try {
+      if (fp.action === 'copy') {
+        const dest = base + '/' + (finalName || fp.item.name);
+        setFileOpProgress({ label: opLabel, name: fp.item.name, current: 0, total: 1 });
+        await axios.post('/api/files/copy', { from: fp.item.path, to: dest });
+        setFileOpProgress({ label: opLabel, name: fp.item.name, current: 1, total: 1 });
+        window.UI.toast({ kind: 'ok', title: 'Copied', body: fp.item.name });
+      } else if (fp.action === 'move') {
+        const dest = base + '/' + fp.item.name;
+        setFileOpProgress({ label: opLabel, name: fp.item.name, current: 0, total: 1 });
+        await axios.post('/api/files/move', { from: fp.item.path, to: dest });
+        setFileOpProgress({ label: opLabel, name: fp.item.name, current: 1, total: 1 });
+        window.UI.toast({ kind: 'ok', title: 'Moved', body: fp.item.name });
+      } else if (fp.action === 'bulkCopy' || fp.action === 'bulkMove') {
+        const apiPath = fp.action === 'bulkMove' ? '/api/files/move' : '/api/files/copy';
+        const total = fp.paths.length;
+        let failures = 0;
+        let done = 0;
+        setFileOpProgress({ label: opLabel, name: `${total} items`, current: 0, total });
+        for (const p of fp.paths) {
+          const name = p.split('/').pop();
+          try { await axios.post(apiPath, { from: p, to: base + '/' + name }); }
+          catch (e) { failures++; }
+          done++;
+          setFileOpProgress({ label: opLabel, name: `${total} items`, current: done, total });
+        }
+        const label = fp.action === 'bulkMove' ? 'Moved' : 'Copied';
+        if (failures === 0) window.UI.toast({ kind: 'ok', title: label, body: `${total} item(s)` });
+        else window.UI.toast({ kind: 'warn', title: 'Partial ' + label.toLowerCase(), body: `${failures} failed of ${total}` });
+        clearMultiSelect();
+      }
+      fetchDir(currentPath);
+    } catch (e) {
+      window.UI.toast({ kind: 'err', title: 'Failed', body: e.response?.data?.error || e.message });
+    } finally {
+      setTimeout(() => { if (mountedRef.current) setFileOpProgress(null); }, 800);
     }
-    if (failures === 0) window.UI.toast({ kind: 'ok', title: action === 'move' ? 'Moved' : 'Copied', body: `${paths.length} item(s)` });
-    else window.UI.toast({ kind: 'warn', title: 'Partial ' + action, body: `${failures} failed of ${paths.length}` });
-    clearMultiSelect();
-    fetchDir(currentPath);
   };
 
   const bulkCompress = async (download = false) => {
@@ -2922,6 +3060,17 @@ function FilesTab() {
         <SambaTab />
       ) : (
         <>
+          {/* Folder picker modal */}
+          {folderPicker && (
+            <FolderPickerModal
+              title={folderPicker.title}
+              initialPath={currentPath}
+              showFileName={folderPicker.action === 'copy'}
+              defaultFileName={folderPicker.suggestedName}
+              onConfirm={confirmFolderPick}
+              onCancel={() => setFolderPicker(null)}
+            />
+          )}
           {/* Toolbar */}
           <div className="files-toolbar" style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap', background: 'var(--bg-2)', padding: '8px 12px', borderRadius: 8, border: '1px solid var(--line)' }}>
         {/* Toggle Sidebar */}
@@ -3086,6 +3235,29 @@ function FilesTab() {
         </div>
       )}
 
+      {/* Copy/Move progress */}
+      {fileOpProgress && (
+        <div style={{ display: 'flex', gap: 12, alignItems: 'center', padding: '8px 12px', background: 'var(--bg-2)', borderRadius: 8, border: '1px solid var(--line)' }}>
+          {fileOpProgress.total === 1 && fileOpProgress.current === 0 && (
+            <span className="spinner" style={{ display: 'inline-block', width: 12, height: 12, border: '2px solid var(--accent)', borderTopColor: 'transparent', borderRadius: '50%', flexShrink: 0, animation: 'spin 0.8s linear infinite' }} />
+          )}
+          <span style={{ fontSize: 12, color: 'var(--text-2)', flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+            {fileOpProgress.label} <b>{fileOpProgress.name}</b>
+            {fileOpProgress.total > 1 && <> — {fileOpProgress.current}/{fileOpProgress.total}</>}…
+          </span>
+          <div style={{ width: 120, height: 8, background: 'var(--line)', borderRadius: 4, overflow: 'hidden' }}>
+            {fileOpProgress.total > 1 ? (
+              <div style={{ width: `${Math.round((fileOpProgress.current / fileOpProgress.total) * 100)}%`, height: '100%', background: 'var(--accent)', transition: 'width 0.15s ease' }} />
+            ) : (
+              <div style={{ width: fileOpProgress.current === 1 ? '100%' : '35%', height: '100%', background: 'var(--accent)', animation: fileOpProgress.current === 0 ? 'pulse 1.2s ease-in-out infinite' : undefined, transition: 'width 0.2s ease' }} />
+            )}
+          </div>
+          <span style={{ fontSize: 11, fontFamily: 'var(--font-mono)', color: 'var(--text-3)', width: 32, textAlign: 'right' }}>
+            {fileOpProgress.total > 1 ? `${Math.round((fileOpProgress.current / fileOpProgress.total) * 100)}%` : (fileOpProgress.current === 1 ? '100%' : '…')}
+          </span>
+        </div>
+      )}
+
       {/* Workspace container */}
       <div className="files-workspace" style={{ display: 'flex', gap: 12, flex: 1, minWidth: 0 }}>
         {/* Sidebar */}
@@ -3207,13 +3379,12 @@ function FilesTab() {
                 )}
                 {selectedItem && <button type="button" className="btn-ghost sm" onClick={() => setOp({ type: 'rename', item: selectedItem, value: selectedItem.name })}>Rename</button>}
                 {selectedItem && <button type="button" className="btn-ghost sm" onClick={() => {
-                  const dir = currentPath.replace(/\/$/, '');
                   const baseName = selectedItem.name;
                   const di = baseName.lastIndexOf('.');
                   const copyName = di > 0 && !selectedItem.isDir ? baseName.slice(0, di) + '_copy' + baseName.slice(di) : baseName + '_copy';
-                  setOp({ type: 'copy', item: selectedItem, value: dir + '/' + copyName });
+                  setFolderPicker({ action: 'copy', item: selectedItem, suggestedName: copyName, title: `Copy "${selectedItem.name}" to…` });
                 }}>Copy</button>}
-                {selectedItem && <button type="button" className="btn-ghost sm files-action-extra" onClick={() => setOp({ type: 'move', item: selectedItem, value: selectedItem.path })}>Move</button>}
+                {selectedItem && <button type="button" className="btn-ghost sm files-action-extra" onClick={() => setFolderPicker({ action: 'move', item: selectedItem, title: `Move "${selectedItem.name}" to…` })}>Move</button>}
                 {selectedItem && <button type="button" className="btn-ghost sm files-action-extra" onClick={() => {
                   const mode = prompt(`Permissions for "${selectedItem?.name}" (octal):`, '0755');
                   if (!mode) return;
@@ -3523,11 +3694,10 @@ function FilesTab() {
             type="button"
             className="context-item"
             onClick={() => {
-              const dir = currentPath.replace(/\/$/, '');
               const baseName = ctxMenu.item.name;
               const di = baseName.lastIndexOf('.');
               const copyName = di > 0 && !ctxMenu.isDir ? baseName.slice(0, di) + '_copy' + baseName.slice(di) : baseName + '_copy';
-              setOp({ type: 'copy', item: ctxMenu.item, value: dir + '/' + copyName });
+              setFolderPicker({ action: 'copy', item: ctxMenu.item, suggestedName: copyName, title: `Copy "${ctxMenu.item.name}" to…` });
               setCtxMenu(null);
             }}
             style={{ width: '100%', display: 'flex', alignItems: 'center', padding: '6px 12px', border: 0, background: 'transparent', color: 'inherit', textAlign: 'left', cursor: 'pointer' }}
@@ -3537,7 +3707,7 @@ function FilesTab() {
           <button
             type="button"
             className="context-item"
-            onClick={() => { setOp({ type: 'move', item: ctxMenu.item, value: ctxMenu.item.path }); setCtxMenu(null); }}
+            onClick={() => { setFolderPicker({ action: 'move', item: ctxMenu.item, title: `Move "${ctxMenu.item.name}" to…` }); setCtxMenu(null); }}
             style={{ width: '100%', display: 'flex', alignItems: 'center', padding: '6px 12px', border: 0, background: 'transparent', color: 'inherit', textAlign: 'left', cursor: 'pointer' }}
           >
             📦 Move

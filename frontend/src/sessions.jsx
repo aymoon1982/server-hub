@@ -215,10 +215,14 @@ function RealTerminalPane({ session, active }) {
   useEffect(() => {
     if (!hostRef.current) return;
 
+    const isMobile = window.innerWidth <= 768;
+
     const term = new XTermTerminal({
       fontSize: 13,
       fontFamily: 'ui-monospace, SFMono-Regular, Menlo, Consolas, monospace',
       cursorBlink: true,
+      scrollback: isMobile ? 500 : 1000,
+      smoothScrollDuration: 0,
       theme: {
         background: '#1f1e1d',
         foreground: '#f5f5f5',
@@ -244,6 +248,24 @@ function RealTerminalPane({ session, active }) {
       term.textarea.addEventListener('blur', () => { blurTimer = setTimeout(() => setKbFocused(false), 150); });
     }
 
+    // Touch-scroll: translate vertical swipes into xterm scroll calls.
+    // The xterm canvas intercepts pointer events so native viewport scroll
+    // never fires on mobile — we have to drive it manually.
+    let touchStartY = 0;
+    const onTouchStart = (e) => { touchStartY = e.touches[0].clientY; };
+    const onTouchMove = (e) => {
+      const dy = touchStartY - e.touches[0].clientY;
+      touchStartY = e.touches[0].clientY;
+      const lines = Math.round(dy / (term.options.fontSize || 13));
+      if (lines !== 0) {
+        term.scrollLines(lines);
+        e.preventDefault();
+      }
+    };
+    const hostEl = hostRef.current;
+    hostEl.addEventListener('touchstart', onTouchStart, { passive: true });
+    hostEl.addEventListener('touchmove', onTouchMove, { passive: false });
+
     term.writeln('\x1b[2m· connecting …\x1b[0m');
     updateStatus('connecting');
 
@@ -264,6 +286,9 @@ function RealTerminalPane({ session, active }) {
     const ws = new WebSocket(`${proto}://${window.location.host}/ws/terminal?${params.toString()}`);
     ws.binaryType = 'arraybuffer';
     wsRef.current = ws;
+
+    // Reuse decoder across messages to avoid per-message GC pressure.
+    const decoder = new TextDecoder();
 
     let opened = false;
     ws.onopen = () => {
@@ -290,7 +315,7 @@ function RealTerminalPane({ session, active }) {
 
     ws.onmessage = (e) => {
       if (e.data instanceof ArrayBuffer) {
-        term.write(new TextDecoder().decode(e.data));
+        term.write(decoder.decode(e.data));
       } else if (typeof e.data === 'string') {
         term.write(e.data);
       }
@@ -326,15 +351,36 @@ function RealTerminalPane({ session, active }) {
       }
     });
 
-    const onWinResize = () => {
-      try { fit.fit(); } catch (e) {}
+    // Debounced fit — avoids rapid-fire calls on window resize or keyboard open/close.
+    let fitTimer = null;
+    const scheduleFit = () => {
+      clearTimeout(fitTimer);
+      fitTimer = setTimeout(() => { try { fit.fit(); } catch {} }, 80);
     };
-    window.addEventListener('resize', onWinResize);
-    const tid = setTimeout(onWinResize, 60);
+
+    window.addEventListener('resize', scheduleFit);
+
+    // Refit when the soft keyboard opens/closes (mobile VisualViewport shrinks).
+    if (window.visualViewport) {
+      window.visualViewport.addEventListener('resize', scheduleFit);
+    }
+
+    // Refit when the container itself changes size (e.g. overlay animation).
+    const ro = new ResizeObserver(scheduleFit);
+    ro.observe(hostEl);
+
+    const tid = setTimeout(scheduleFit, 60);
 
     return () => {
       clearTimeout(tid);
-      window.removeEventListener('resize', onWinResize);
+      clearTimeout(fitTimer);
+      window.removeEventListener('resize', scheduleFit);
+      if (window.visualViewport) {
+        window.visualViewport.removeEventListener('resize', scheduleFit);
+      }
+      ro.disconnect();
+      hostEl.removeEventListener('touchstart', onTouchStart);
+      hostEl.removeEventListener('touchmove', onTouchMove);
       try { ws.close(); } catch (e) {}
       try { term.dispose(); } catch (e) {}
     };
