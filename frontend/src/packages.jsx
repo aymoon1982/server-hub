@@ -76,6 +76,11 @@ function usePkgAction() {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ packages: [pkg] }),
     }).then(res => {
+      if (!res.ok || !res.body) {
+        setActionPkg(null);
+        window.UI?.toast({ kind: 'err', title: 'Failed', body: `HTTP ${res.status}` });
+        return;
+      }
       const reader = res.body.getReader();
       const dec = new TextDecoder();
       let buf = '';

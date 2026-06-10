@@ -51,10 +51,20 @@ function parseDow(dow) {
   return nums;
 }
 
+// Memoized: this runs per JobCard on every render (and the panel re-renders
+// every 3s while a job runs), so a never-matching cron would otherwise scan
+// up to ~527k minutes synchronously each time.
+const nextRunCache = new Map();
 function nextRunFromCron(cron, from = new Date()) {
   if (!cron) return null;
   const fields = cron.trim().split(/\s+/);
   if (fields.length !== 5) return null;
+  const cacheKey = `${cron}@${Math.floor(from.getTime() / 60000)}`;
+  if (nextRunCache.has(cacheKey)) {
+    const hit = nextRunCache.get(cacheKey);
+    return hit ? new Date(hit) : null;
+  }
+  if (nextRunCache.size > 200) nextRunCache.clear();
   const match = (field, val) => {
     if (field === '*') return true;
     if (field.includes(',')) return field.split(',').some(f => match(f, val));
@@ -80,9 +90,13 @@ function nextRunFromCron(cron, from = new Date()) {
   cur.setSeconds(0, 0);
   cur.setMinutes(cur.getMinutes() + 1);
   for (let i = 0; i < 60 * 24 * 366; i++) {
-    if (test(cur)) return new Date(cur);
+    if (test(cur)) {
+      nextRunCache.set(cacheKey, cur.getTime());
+      return new Date(cur);
+    }
     cur.setMinutes(cur.getMinutes() + 1);
   }
+  nextRunCache.set(cacheKey, null);
   return null;
 }
 
@@ -809,7 +823,7 @@ function JobForm({ job, agents, workspaces: initialWorkspaces, activeWsId, defau
             <div className="aj-field">
               <label className="aj-label">Agent</label>
               <div className="aj-agent-picker">
-                {[{ id: 'shell', label: 'Shell', cmd: 'shell' }, ...agents].map(a => (
+                {(agents.some(a => a.id === 'shell') ? agents : [{ id: 'shell', label: 'Shell', cmd: 'shell' }, ...agents]).map(a => (
                   <button key={a.id} type="button"
                     className={`aj-agent-chip ${agentId === a.id ? 'is-selected' : ''}`}
                     onClick={() => setAgentId(a.id)}>
@@ -961,28 +975,40 @@ export function AgentJobsPanel({ workspaces, agents, activeWsId, onWorkspacesCha
   }, [loadSelected]);
 
   const handleCreate = async (data) => {
-    const r = await axios.post('/api/agent-jobs', data);
-    await loadJobs();
-    setSelectedId(r.data.job.id);
-    setShowForm(false); setEditJob(null);
-    window.UI?.toast?.({ kind: 'ok', title: 'Job created', body: r.data.job.name });
+    try {
+      const r = await axios.post('/api/agent-jobs', data);
+      await loadJobs();
+      setSelectedId(r.data.job.id);
+      setShowForm(false); setEditJob(null);
+      window.UI?.toast?.({ kind: 'ok', title: 'Job created', body: r.data.job.name });
+    } catch (e) {
+      window.UI?.toast?.({ kind: 'err', title: 'Create failed', body: e.response?.data?.error || e.message });
+    }
   };
 
   const handleUpdate = async (id, data) => {
-    await axios.put(`/api/agent-jobs/${id}`, data);
-    await loadJobs();
-    setShowForm(false); setEditJob(null);
-    window.UI?.toast?.({ kind: 'ok', title: 'Job updated' });
+    try {
+      await axios.put(`/api/agent-jobs/${id}`, data);
+      await loadJobs();
+      setShowForm(false); setEditJob(null);
+      window.UI?.toast?.({ kind: 'ok', title: 'Job updated' });
+    } catch (e) {
+      window.UI?.toast?.({ kind: 'err', title: 'Update failed', body: e.response?.data?.error || e.message });
+    }
   };
 
   const handleDelete = async (id) => {
     const job = jobs.find(j => j.id === id);
     const ok = await window.UI.confirm({ title: 'Delete Job', body: `Delete "${job?.name}"? This removes all run history.`, confirmLabel: 'Delete', dangerous: true });
     if (!ok) return;
-    await axios.delete(`/api/agent-jobs/${id}`);
-    await loadJobs();
-    if (selectedId === id) setSelectedId(null);
-    window.UI?.toast?.({ kind: 'ok', title: 'Job deleted' });
+    try {
+      await axios.delete(`/api/agent-jobs/${id}`);
+      await loadJobs();
+      if (selectedId === id) setSelectedId(null);
+      window.UI?.toast?.({ kind: 'ok', title: 'Job deleted' });
+    } catch (e) {
+      window.UI?.toast?.({ kind: 'err', title: 'Delete failed', body: e.response?.data?.error || e.message });
+    }
   };
 
   const handleRun = async (id) => {
@@ -1007,8 +1033,12 @@ export function AgentJobsPanel({ workspaces, agents, activeWsId, onWorkspacesCha
   };
 
   const handleToggle = async (id, enabled) => {
-    await axios.put(`/api/agent-jobs/${id}`, { enabled });
-    await loadJobs();
+    try {
+      await axios.put(`/api/agent-jobs/${id}`, { enabled });
+      await loadJobs();
+    } catch (e) {
+      window.UI?.toast?.({ kind: 'err', title: 'Toggle failed', body: e.response?.data?.error || e.message });
+    }
   };
 
   const handleClone = async (id) => {

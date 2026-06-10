@@ -147,22 +147,25 @@ export function TerminalPane({ id, cwd, agent, envCsv, active, onTitle, onRegist
           try { term.write('\r\n\x1b[33m[disconnected]\x1b[0m\r\n'); } catch {}
         }
       };
-      term.onData((d) => {
-        let data = d;
-        // Sticky Ctrl from the mobile key bar: fold the next single char into
-        // its control code (a → ^A, c → ^C, etc.), then release the modifier.
-        if (ctrlRef.current && data.length === 1) {
-          const c = data.charCodeAt(0);
-          if (c >= 97 && c <= 122)      data = String.fromCharCode(c - 96); // a-z
-          else if (c >= 64 && c <= 95)  data = String.fromCharCode(c - 64); // @,A-Z,[\]^_
-          ctrlRef.current = false;
-          setCtrlOn(false);
-        }
-        if (ws.readyState === ws.OPEN) ws.send(data);
-      });
-
       return ws;
     };
+
+    // Registered once — connect() runs again on every reconnect, and a handler
+    // per call would stack up (each stale one also consuming the sticky-Ctrl flag).
+    term.onData((d) => {
+      let data = d;
+      // Sticky Ctrl from the mobile key bar: fold the next single char into
+      // its control code (a → ^A, c → ^C, etc.), then release the modifier.
+      if (ctrlRef.current && data.length === 1) {
+        const c = data.charCodeAt(0);
+        if (c >= 97 && c <= 122)      data = String.fromCharCode(c - 96); // a-z
+        else if (c >= 64 && c <= 95)  data = String.fromCharCode(c - 64); // @,A-Z,[\]^_
+        ctrlRef.current = false;
+        setCtrlOn(false);
+      }
+      const ws = wsRef.current;
+      if (ws && ws.readyState === WebSocket.OPEN) ws.send(data);
+    });
 
     connect(!!sessionId);
 

@@ -500,6 +500,7 @@ function SystemUpdatesTab() {
       const reader = resp.body.getReader();
       const dec = new TextDecoder();
       let buf = '';
+      let sawDone = false;
       try {
         while (true) {
           const { done, value } = await reader.read();
@@ -507,29 +508,30 @@ function SystemUpdatesTab() {
           buf += dec.decode(value, { stream: true });
           const lines = buf.split('\n');
           buf = lines.pop();
-          let parseFailed = false;
           for (const line of lines) {
             if (!line.startsWith('data: ')) continue;
-            try {
-              const obj = JSON.parse(line.slice(6));
-              if (obj.type === 'log' && mountedRef.current) setLog(prev => [...prev, obj.text]);
-              if (obj.type === 'done') {
-                if (mountedRef.current) setRunning(false);
-                if (obj.code === 0) {
-                  window.UI.toast({ kind: 'ok', title: 'Updates applied', body: `${names.length} package${names.length > 1 ? 's' : ''} updated${isKernel ? ' · Reboot recommended' : ''}`, ttl: 6000 });
-                } else {
-                  window.UI.toast({ kind: 'err', title: 'Some packages failed', body: `apt exit code ${obj.code}` });
-                }
-                fetchUpdates();
+            // Skip unparseable lines — bailing out here would abandon the
+            // stream and leave the Apply button stuck on "Installing…"
+            let obj;
+            try { obj = JSON.parse(line.slice(6)); } catch { continue; }
+            if (obj.type === 'log' && mountedRef.current) setLog(prev => [...prev, obj.text]);
+            if (obj.type === 'done') {
+              sawDone = true;
+              if (obj.code === 0) {
+                window.UI.toast({ kind: 'ok', title: 'Updates applied', body: `${names.length} package${names.length > 1 ? 's' : ''} updated${isKernel ? ' · Reboot recommended' : ''}`, ttl: 6000 });
+              } else {
+                window.UI.toast({ kind: 'err', title: 'Some packages failed', body: `apt exit code ${obj.code}` });
               }
-            } catch {
-              parseFailed = true;
+              fetchUpdates();
             }
           }
-          if (parseFailed) break;
         }
       } finally {
         try { reader.releaseLock(); } catch {}
+        if (mountedRef.current) setRunning(false);
+      }
+      if (!sawDone) {
+        window.UI.toast({ kind: 'err', title: 'Stream ended unexpectedly', body: 'Check the system updates list for the result.' });
       }
     } catch (e) {
       if (mountedRef.current) setRunning(false);
@@ -722,7 +724,6 @@ function GenerateKeyModal({ onCreate, onClose }) {
     try {
       await axios.post('/api/ssh/keys/generate', {
         name: name.trim(),
-      originalName: isEdit ? share.name : undefined,
         type,
         bits: type === 'ED25519' ? 256 : bits,
         comment: comment.trim(),

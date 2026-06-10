@@ -40,6 +40,7 @@ function Sparkline({ data, width = 80, height = 22, stroke = 'currentColor', fil
 }
 
 function Gauge({ value, label, sub, max = 100, size = 88 }) {
+  value = Number.isFinite(value) ? value : 0;
   const r = (size - 12) / 2;
   const c = 2 * Math.PI * r;
   const off = c - (value / max) * c;
@@ -318,8 +319,8 @@ function Overview({ onNav }) {
     saveLayout(newLayout);
   };
 
-  const [cpuHistory, setCpuHistory] = useState(() => Array.from({length: 24}, () => 10 + Math.floor(Math.random() * 20)));
-  const [ramHistory, setRamHistory] = useState(() => Array.from({length: 24}, () => 20 + Math.floor(Math.random() * 10)));
+  const [cpuHistory, setCpuHistory] = useState(() => Array.from({length: 24}, () => 0));
+  const [ramHistory, setRamHistory] = useState(() => Array.from({length: 24}, () => 0));
   const [rxHistory, setRxHistory] = useState(() => Array.from({length: 24}, () => 0));
   const [txHistory, setTxHistory] = useState(() => Array.from({length: 24}, () => 0));
 
@@ -332,8 +333,8 @@ function Overview({ onNav }) {
         const res = await axios.get('/api/stats');
         if (!mountedRef.current) return;
         setStats(res.data);
-        setCpuHistory(prev => [...prev.slice(1), res.data.cpu]);
-        setRamHistory(prev => [...prev.slice(1), res.data.ram]);
+        setCpuHistory(prev => [...prev.slice(1), res.data.cpu || 0]);
+        setRamHistory(prev => [...prev.slice(1), res.data.ram || 0]);
         setRxHistory(prev => [...prev.slice(1), res.data.network?.rxMbps || 0]);
         setTxHistory(prev => [...prev.slice(1), res.data.network?.txMbps || 0]);
       } catch (e) {}
@@ -597,7 +598,7 @@ function Overview({ onNav }) {
               <span className="muted mono" style={{ fontSize: '11px' }}>{stats.host?.cpuModel}</span>
             </div>
             <div className="res-big-row" style={{ display: 'flex', gap: 24, alignItems: 'center', flexWrap: 'wrap' }}>
-              <Gauge value={stats.cpu} label="utilization" sub={`temp ${stats.temps?.cpu ? stats.temps.cpu.toFixed(0) : 0}°C`} />
+              <Gauge value={stats.cpu || 0} label="utilization" sub={`temp ${stats.temps?.cpu ? stats.temps.cpu.toFixed(0) : 0}°C`} />
               <div className="res-big-spark" style={{ flex: 1, minWidth: 0 }}>
                 <Sparkline data={cpuHistory} width={300} height={56} stroke="var(--accent)" fill="var(--accent)" />
                 <div className="res-spark-meta mono">load avg <b>{stats.cpu?.toFixed(1)}%</b></div>
@@ -605,7 +606,7 @@ function Overview({ onNav }) {
             </div>
             <div className="core-grid" style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(40px, 1fr))', gap: 6, marginTop: 12 }}>
               {Array.from({ length: Math.min(stats.host?.cores || 4, 16) }).map((_, i) => {
-                const v = Math.min(100, Math.max(0, Math.round(stats.cpu * (0.6 + Math.random() * 0.8))));
+                const v = Math.min(100, Math.max(0, Math.round(stats.cpu || 0)));
                 return (
                   <div key={i} className="core-cell" style={{ display: 'flex', flexDirection: 'column', alignItems: 'center' }}>
                     <div className="core-bar" style={{ height: 40, width: 8, background: 'var(--line)', borderRadius: 4, position: 'relative', overflow: 'hidden' }}>
@@ -623,7 +624,7 @@ function Overview({ onNav }) {
           <div className="card res-ram" style={{ height: '100%', boxSizing: 'border-box' }}>
             <div className="card-head"><h3>Memory</h3><span className="muted mono">{ramTotalG} GB</span></div>
             <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 12, justifyContent: 'center', height: '100%' }}>
-              <Gauge value={stats.ram} label="used" sub={`${ramUsedG} / ${ramTotalG} GB`} size={104} />
+              <Gauge value={stats.ram || 0} label="used" sub={`${ramUsedG} / ${ramTotalG} GB`} size={104} />
               <div style={{ width: '100%' }}>
                 <Sparkline data={ramHistory} width={260} height={48} stroke="var(--accent)" fill="var(--accent)" />
               </div>
@@ -1002,11 +1003,11 @@ function ServicesTab({ kind, cardStyle }) {
   };
 
   const addManual = () => {
-    const name = prompt('Service name:');
+    const name = (prompt('Service name:') || '').trim();
     if (!name) return;
-    const url = prompt('Service URL (e.g. http://localhost:8080):');
+    const url = (prompt('Service URL (e.g. http://localhost:8080):') || '').trim();
     if (!url) return;
-    if (!/^https?:\/\//.test(url.trim())) {
+    if (!/^https?:\/\//.test(url)) {
       window.UI.toast({ kind: 'err', title: 'Invalid URL', body: 'Must start with http:// or https://' });
       return;
     }
@@ -1405,7 +1406,7 @@ function SambaShares() {
 
   useEffect(() => { fetchShares(); }, []);
 
-  const filtered = shares.filter(s => s.name.includes(q.toLowerCase()) || s.path.toLowerCase().includes(q.toLowerCase()));
+  const filtered = shares.filter(s => s.name.toLowerCase().includes(q.toLowerCase()) || s.path.toLowerCase().includes(q.toLowerCase()));
 
   const newShare = () => {
     window.UI.modal(
@@ -1500,12 +1501,16 @@ function AddSambaUserModal({ onSave, onClose }) {
   }, []);
 
   const handleSave = async () => {
-    if (!username) {
+    if (!username.trim()) {
       window.UI.toast({ kind: 'err', title: 'Missing username' });
       return;
     }
+    if (!password) {
+      window.UI.toast({ kind: 'err', title: 'Missing password', body: 'Samba accounts need a non-empty password.' });
+      return;
+    }
     try {
-      await axios.post('/api/samba/users', { username, password });
+      await axios.post('/api/samba/users', { username: username.trim(), password });
       window.UI.toast({ kind: 'ok', title: 'User added', body: username });
       onSave();
       onClose();
@@ -1595,6 +1600,10 @@ function SambaUsers() {
         footer={<>
           <button type="button" className="btn-ghost" onClick={() => window.UI.closeModal()}>Cancel</button>
           <button type="button" className="btn-accent" onClick={async () => {
+            if (!pw) {
+              window.UI.toast({ kind: 'err', title: 'Missing password', body: 'Enter a non-empty password.' });
+              return;
+            }
             try {
               await axios.post('/api/samba/users', { username: u.name, password: pw });
               window.UI.closeModal();
@@ -2751,16 +2760,22 @@ function FilesTab() {
   }, [folders, files]);
 
   const clickTimer = useRef(null);
+  const lastClickPath = useRef(null);
   useEffect(() => () => { if (clickTimer.current) clearTimeout(clickTimer.current); }, []);
   const handleRowClick = (item, isDir) => {
-    if (clickTimer.current) {
+    // Only treat two rapid clicks on the SAME row as a double click
+    if (clickTimer.current && lastClickPath.current === item.path) {
       clearTimeout(clickTimer.current);
       clickTimer.current = null;
+      lastClickPath.current = null;
       if (isDir) fetchDir(item.path);
       else openFile(item);
     } else {
+      if (clickTimer.current) clearTimeout(clickTimer.current);
+      lastClickPath.current = item.path;
       clickTimer.current = setTimeout(() => {
         clickTimer.current = null;
+        lastClickPath.current = null;
         setSelected(prev => prev === item.name ? null : item.name);
         if (!isDir && PREVIEW_IMAGE_EXTS.has(fileExt(item.name)) && previewOpen) {
           setPreviewFile({ ...item, kind: 'image' });
@@ -2817,6 +2832,12 @@ function FilesTab() {
 
   const commitOp = async () => {
     if (!op) return;
+    const value = (op.value || '').trim();
+    if (!value) {
+      window.UI.toast({ kind: 'err', title: 'Name required', body: 'Enter a non-empty name or path.' });
+      return;
+    }
+    op.value = value;
     const dir = currentPath.replace(/\/$/, '');
     try {
       if (op.type === 'rename') {
@@ -3440,7 +3461,7 @@ function FilesTab() {
                             onClick={(e) => {
                               e.stopPropagation();
                               const rect = e.currentTarget.getBoundingClientRect();
-                              setCtxMenu({ x: rect.left - 120, y: rect.bottom + window.scrollY, item: f, isDir: true });
+                              setCtxMenu({ x: Math.max(8, rect.left - 120), y: rect.bottom, item: f, isDir: true });
                             }}
                             style={{
                               padding: '2px 6px',
@@ -3477,7 +3498,7 @@ function FilesTab() {
                             onClick={(e) => {
                               e.stopPropagation();
                               const rect = e.currentTarget.getBoundingClientRect();
-                              setCtxMenu({ x: rect.left - 120, y: rect.bottom + window.scrollY, item: f, isDir: false });
+                              setCtxMenu({ x: Math.max(8, rect.left - 120), y: rect.bottom, item: f, isDir: false });
                             }}
                             style={{
                               padding: '2px 6px',
@@ -3536,7 +3557,7 @@ function FilesTab() {
                           onClick={(e) => {
                             e.stopPropagation();
                             const rect = e.currentTarget.getBoundingClientRect();
-                            setCtxMenu({ x: rect.left, y: rect.bottom + window.scrollY, item: f, isDir: true });
+                            setCtxMenu({ x: rect.left, y: rect.bottom, item: f, isDir: true });
                           }}
                           style={{
                             position: 'absolute',
@@ -3594,7 +3615,7 @@ function FilesTab() {
                           onClick={(e) => {
                             e.stopPropagation();
                             const rect = e.currentTarget.getBoundingClientRect();
-                            setCtxMenu({ x: rect.left, y: rect.bottom + window.scrollY, item: f, isDir: false });
+                            setCtxMenu({ x: rect.left, y: rect.bottom, item: f, isDir: false });
                           }}
                           style={{
                             position: 'absolute',
@@ -3909,7 +3930,7 @@ function SSHServerModal({ server, onSave, onClose }) {
           <input value={host} onChange={(e) => setHost(e.target.value)} placeholder="10.1.1.10" className="mono" />
         </FormField>
         <FormField label="Port">
-          <input type="number" value={port} onChange={(e) => setPort(parseInt(e.target.value, 10))} className="mono" />
+          <input type="number" value={port} onChange={(e) => setPort(e.target.value)} className="mono" />
         </FormField>
         <FormField label="User" span={2}>
           <input value={username} onChange={(e) => setUsername(e.target.value)} className="mono" />
@@ -4562,7 +4583,11 @@ function SpeedtestTab() {
   const [stageProgress, setStageProgress] = useState(0); // 0 to 100
   const [errorMsg, setErrorMsg] = useState(null);
   const timersRef = useRef([]);
-  useEffect(() => () => { timersRef.current.forEach(clearTimeout); timersRef.current = []; }, []);
+  const speedtestMountedRef = useRef(true);
+  useEffect(() => {
+    speedtestMountedRef.current = true;
+    return () => { speedtestMountedRef.current = false; timersRef.current.forEach(clearTimeout); timersRef.current = []; };
+  }, []);
 
   // Live traffic stats
   const [rxHist, setRxHist] = useState(() => Array.from({ length: 30 }, () => 0));
@@ -4608,18 +4633,20 @@ function SpeedtestTab() {
       clearTimeout(timer1);
       clearTimeout(timer2);
       clearTimeout(timer3);
+      localStorage.setItem('last_speedtest', JSON.stringify(res.data));
+      if (!speedtestMountedRef.current) return;
       setStageProgress(100);
       setStage('done');
       setResult(res.data);
-      localStorage.setItem('last_speedtest', JSON.stringify(res.data));
     } catch (err) {
       clearTimeout(timer1);
       clearTimeout(timer2);
       clearTimeout(timer3);
+      if (!speedtestMountedRef.current) return;
       setStage('err');
       setErrorMsg(err.response?.data?.error || err.message || 'Speedtest failed');
     } finally {
-      setLoading(false);
+      if (speedtestMountedRef.current) setLoading(false);
     }
   };
 

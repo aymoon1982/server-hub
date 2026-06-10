@@ -71,57 +71,93 @@ function DockerTab() {
   const [sub, setSub] = useState('containers');
   const [logs, setLogs] = useState([]);
   const [installing, setInstalling] = useState(false);
+  const [statusError, setStatusError] = useState(false);
+  const installAbortRef = useRef(null);
 
   const checkStatus = () => {
     setLoading(true);
     axios.get('/api/docker/status')
       .then(r => {
         setStatus(r.data);
+        setStatusError(false);
         setLoading(false);
       })
       .catch(() => {
+        setStatusError(true);
         setLoading(false);
       });
   };
 
   useEffect(() => {
     checkStatus();
+    return () => installAbortRef.current?.abort();
   }, []);
 
-  const handleInstall = () => {
+  const handleInstall = async () => {
     setInstalling(true);
     setLogs([]);
-    const eventSource = new EventSource('/api/docker/install', { withCredentials: true });
-    
-    eventSource.onmessage = (event) => {
-      try {
-        const data = JSON.parse(event.data);
-        if (data.type === 'log') {
-          setLogs(prev => [...prev, data.text]);
-        } else if (data.type === 'done') {
-          eventSource.close();
-          setInstalling(false);
-          window.UI.toast({
-            kind: data.code === 0 ? 'ok' : 'err',
-            title: data.code === 0 ? 'Docker installed' : 'Installation failed',
-            body: data.code === 0 ? 'Docker has been successfully installed!' : 'See log for details.'
-          });
-          checkStatus();
+    const controller = new AbortController();
+    installAbortRef.current = controller;
+    try {
+      // The install endpoint is POST + SSE-formatted body, so EventSource (GET-only) can't be used
+      const res = await fetch('/api/docker/install', { method: 'POST', signal: controller.signal });
+      if (!res.ok || !res.body) throw new Error(`HTTP ${res.status}`);
+      const reader = res.body.getReader();
+      const decoder = new TextDecoder();
+      let buf = '';
+      let finished = false;
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        buf += decoder.decode(value, { stream: true });
+        const events = buf.split('\n\n');
+        buf = events.pop();
+        for (const evt of events) {
+          const line = evt.split('\n').find(l => l.startsWith('data: '));
+          if (!line) continue;
+          let data;
+          try { data = JSON.parse(line.slice(6)); } catch { continue; }
+          if (data.type === 'log') {
+            setLogs(prev => [...prev, data.text]);
+          } else if (data.type === 'done') {
+            finished = true;
+            setInstalling(false);
+            window.UI.toast({
+              kind: data.code === 0 ? 'ok' : 'err',
+              title: data.code === 0 ? 'Docker installed' : 'Installation failed',
+              body: data.code === 0 ? 'Docker has been successfully installed!' : 'See log for details.'
+            });
+            checkStatus();
+          }
         }
-      } catch (e) {
-        console.error(e);
       }
-    };
-
-    eventSource.onerror = (e) => {
-      eventSource.close();
+      if (!finished) {
+        setInstalling(false);
+        checkStatus();
+      }
+    } catch (e) {
+      if (controller.signal.aborted) return;
       setInstalling(false);
       window.UI.toast({ kind: 'err', title: 'Connection lost', body: 'Failed to stream installation output.' });
-    };
+    }
   };
 
   if (loading) {
     return <div className="loading" style={{ padding: 24, textAlign: 'center' }}>Checking Docker status...</div>;
+  }
+
+  if (statusError) {
+    return (
+      <div className="card" style={{ padding: 24, maxWidth: 650, margin: '20px auto' }}>
+        <h2 style={{ display: 'flex', alignItems: 'center', gap: 10, margin: '0 0 12px 0', color: 'var(--text-1)' }}>
+          <span style={{ fontSize: '24px' }}>🐳</span> Docker Management
+        </h2>
+        <p className="muted" style={{ lineHeight: 1.5, marginBottom: 20 }}>
+          Could not reach the backend to check Docker status.
+        </p>
+        <button className="btn-accent" onClick={checkStatus}>↻ Retry</button>
+      </div>
+    );
   }
 
   if (!status.installed || !status.running) {
@@ -509,7 +545,7 @@ function Shell() {
                   >
                     <span className="nav-glyph">{tab.icon ? <tab.icon size={17} strokeWidth={1.75} /> : tab.glyph}</span>
                     <span className="nav-label">{tab.label}</span>
-                    {counts[tab.id] !== '' && <span className={`nav-count ${tab.badge ? 'is-badge' : ''}`}>{counts[tab.id]}</span>}
+                    {(counts[tab.id] ?? '') !== '' && <span className={`nav-count ${tab.badge ? 'is-badge' : ''}`}>{counts[tab.id]}</span>}
                   </button>
                 ))}
               </React.Fragment>
@@ -588,7 +624,7 @@ function Shell() {
           >
             <span className="nav-glyph">{tab.icon ? <tab.icon size={18} strokeWidth={1.75} /> : tab.glyph}</span>
             <span>{tab.label}</span>
-            {counts[tab.id] !== '' && <span className={`nav-count ${tab.badge ? 'is-badge' : ''}`}>{counts[tab.id]}</span>}
+            {(counts[tab.id] ?? '') !== '' && <span className={`nav-count ${tab.badge ? 'is-badge' : ''}`}>{counts[tab.id]}</span>}
           </button>
         ))}
       </nav>
@@ -747,11 +783,17 @@ function CommandPalette({ query, setQuery, onClose, onNavigate, onLaunchTerminal
   const [agents, setAgents] = useState([]);
   const [sshServers, setSshServers] = useState([]);
 
+  // onClose is recreated on every parent render (every keystroke updates the
+  // query in Shell) — keep it in a ref so this effect runs once on mount.
+  // Otherwise focus/select() destroys the typed text and the fetches re-fire
+  // per keystroke.
+  const onCloseRef = useRef(onClose);
+  useEffect(() => { onCloseRef.current = onClose; }, [onClose]);
   useEffect(() => {
     inputRef.current?.focus();
     inputRef.current?.select();
     const onKey = (e) => {
-      if (e.key === 'Escape') onClose();
+      if (e.key === 'Escape') onCloseRef.current();
     };
     window.addEventListener('keydown', onKey);
 
@@ -764,7 +806,7 @@ function CommandPalette({ query, setQuery, onClose, onNavigate, onLaunchTerminal
     }
 
     return () => window.removeEventListener('keydown', onKey);
-  }, [onClose]);
+  }, []);
 
   const allItems = useMemo(() => {
     const list = [];

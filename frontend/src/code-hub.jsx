@@ -112,14 +112,14 @@ export function CodeHubTab({ isVisible = true }) {
   // to catch any further layout settling (sidebar collapse, etc.).
   useEffect(() => {
     if (!(isVisible && sub === 'terminal')) return;
+    let t2 = null;
     const raf = requestAnimationFrame(() => {
       Object.values(termFits.current).forEach(fn => { try { fn(); } catch {} });
-      const t2 = setTimeout(() => {
+      t2 = setTimeout(() => {
         Object.values(termFits.current).forEach(fn => { try { fn(); } catch {} });
       }, 100);
-      return () => clearTimeout(t2);
     });
-    return () => cancelAnimationFrame(raf);
+    return () => { cancelAnimationFrame(raf); if (t2) clearTimeout(t2); };
   }, [isVisible, sub]);
 
   // ── Data loading ───────────────────────────────────────────────────────────
@@ -193,7 +193,8 @@ export function CodeHubTab({ isVisible = true }) {
     setTerminals(prev => { const n = [...prev, entry]; persistSessions(n); return n; });
     setActiveTermId(id);
     setSavedSessions(prev => {
-      const n = prev.filter(s => s.sessionId !== sess.sessionId);
+      // Match by unique id — several saved sessions can share sessionId: null
+      const n = prev.filter(s => s.id !== sess.id);
       lsWrite(SESSIONS_KEY, n);
       return n;
     });
@@ -219,26 +220,24 @@ export function CodeHubTab({ isVisible = true }) {
   }, [cwd, agents, setActiveWsId, persistSessions]);
 
   const closeTerminal = useCallback((id) => {
-    setTerminals(prev => {
-      const t = prev.find(x => x.id === id);
-      if (t?.sessionId) {
-        fetch(`/api/terminal-sessions/${t.sessionId}`, { method: 'DELETE' }).catch(() => {});
-      }
-      // Add coding-agent sessions to history so user can resume later
-      if (t && t.agent) {
-        setSessionHistory(prevHist => {
-          const entry = { ...t, closedAt: Date.now() };
-          const next = [entry, ...prevHist.filter(h => h.sessionId !== t.sessionId)].slice(0, 10);
-          lsWrite(HISTORY_KEY, next);
-          return next;
-        });
-      }
-      const rest = prev.filter(x => x.id !== id);
-      setActiveTermId(cur => cur === id ? (rest.length ? rest[rest.length - 1].id : null) : cur);
-      persistSessions(rest);
-      return rest;
-    });
-  }, [persistSessions]);
+    // Side effects (DELETE, history write) stay outside the setState updater —
+    // React double-invokes updaters in StrictMode, which fired them twice.
+    const t = terminals.find(x => x.id === id);
+    if (t?.sessionId) {
+      fetch(`/api/terminal-sessions/${t.sessionId}`, { method: 'DELETE' }).catch(() => {});
+    }
+    // Add coding-agent sessions to history so user can resume later
+    if (t && t.agent) {
+      const entry = { ...t, closedAt: Date.now() };
+      const nextHist = [entry, ...sessionHistory.filter(h => h.id !== t.id && (!t.sessionId || h.sessionId !== t.sessionId))].slice(0, 10);
+      setSessionHistory(nextHist);
+      lsWrite(HISTORY_KEY, nextHist);
+    }
+    const rest = terminals.filter(x => x.id !== id);
+    setTerminals(rest);
+    persistSessions(rest);
+    setActiveTermId(cur => cur === id ? (rest.length ? rest[rest.length - 1].id : null) : cur);
+  }, [terminals, sessionHistory, persistSessions]);
 
   const handleSessionId = useCallback((termId, sid) => {
     setTerminals(prev => {
@@ -420,7 +419,7 @@ export function CodeHubTab({ isVisible = true }) {
                         </div>
                         <button className="sess-recover-btn" onClick={() => reconnectSession(s)}>↺ Reconnect</button>
                         <button className="sess-recover-dismiss" title="Dismiss" onClick={() => {
-                          setSavedSessions(prev => { const n = prev.filter(x => x.sessionId !== s.sessionId); lsWrite(SESSIONS_KEY, n); return n; });
+                          setSavedSessions(prev => { const n = prev.filter(x => x.id !== s.id); lsWrite(SESSIONS_KEY, n); return n; });
                         }}>×</button>
                       </div>
                     ))}

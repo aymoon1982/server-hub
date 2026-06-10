@@ -26,15 +26,23 @@ function PortScanPanel({ ip, onClose }) {
     setDone(false);
     setStatus('Starting…');
 
+    // Abort the stream when the panel closes or the IP changes — otherwise the
+    // old scan keeps running and setState fires on an unmounted component
+    const controller = new AbortController();
+    let aborted = false;
+
     fetch('/api/network/lan/portscan', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ ip }),
+      signal: controller.signal,
     }).then(res => {
+      if (!res.ok || !res.body) { if (!aborted) { setStatus(`Error: HTTP ${res.status}`); setDone(true); } return; }
       const reader = res.body.getReader();
       const dec = new TextDecoder();
       let buf = '';
       const read = () => reader.read().then(({ done: d, value }) => {
+        if (aborted) return;
         if (d) { setDone(true); return; }
         buf += dec.decode(value, { stream: true });
         const blocks = buf.split('\n\n');
@@ -51,9 +59,11 @@ function PortScanPanel({ ip, onClose }) {
           } catch {}
         }
         read();
-      }).catch(() => setDone(true));
+      }).catch(() => { if (!aborted) setDone(true); });
       read();
-    }).catch(e => { setStatus(`Error: ${e.message}`); setDone(true); });
+    }).catch(e => { if (!aborted) { setStatus(`Error: ${e.message}`); setDone(true); } });
+
+    return () => { aborted = true; controller.abort(); };
   }, [ip]);
 
   return (
@@ -268,6 +278,11 @@ export function LANScannerTab() {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(subnet ? { subnet } : {}),
     }).then(res => {
+      if (!res.ok || !res.body) {
+        setScanLog(l => [...l, `Error: HTTP ${res.status}`]);
+        setScanning(false);
+        return;
+      }
       const reader = res.body.getReader();
       const dec = new TextDecoder();
       let buf = '';
@@ -324,8 +339,9 @@ export function LANScannerTab() {
   const sorted = [...filtered].sort((a, b) => {
     let av = a[sortKey] ?? '', bv = b[sortKey] ?? '';
     if (sortKey === 'ip') {
-      av = a.ip.split('.').map(n => +n.padStart(3, '0')).join('');
-      bv = b.ip.split('.').map(n => +n.padStart(3, '0')).join('');
+      // Zero-pad each octet so lexicographic compare matches numeric order
+      av = a.ip.split('.').map(n => n.padStart(3, '0')).join('');
+      bv = b.ip.split('.').map(n => n.padStart(3, '0')).join('');
     }
     if (sortKey === 'latency') { av = a.latency ?? 9999; bv = b.latency ?? 9999; }
     if (typeof av === 'number') return sortAsc ? av - bv : bv - av;

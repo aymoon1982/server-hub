@@ -97,14 +97,16 @@ export function CLIUsageTab() {
     );
   }
   
-  if (error) {
+  // Only blank the dashboard when we have nothing to show — a transient poll
+  // failure shouldn't wipe data that's already on screen
+  if (error && !data) {
     return (
       <div style={{ padding: 24, textAlign: 'center', color: '#ef4444' }}>
         Error: {error}
       </div>
     );
   }
-  
+
   const claude = data?.claude || {};
   const agy = data?.agy || {};
   

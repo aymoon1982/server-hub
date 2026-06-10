@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import axios from 'axios';
 
 function LineChart({ data, series, height = 150, yMax = 100, yUnit = '%', label }) {
@@ -83,20 +83,23 @@ export function MetricsTab() {
   const [range, setRange] = useState('1h');
   const [data, setData] = useState([]);
   const [loading, setLoading] = useState(true);
-
-  const load = (r) => {
-    setLoading(true);
-    axios.get('/api/metrics/history', { params: { range: r } })
-      .then(res => { setData(res.data.samples || []); setLoading(false); })
-      .catch(() => setLoading(false));
-  };
-
-  useEffect(() => { load(range); }, [range]);
+  // Guards against out-of-order responses when switching ranges quickly
+  const rangeRef = useRef(range);
 
   useEffect(() => {
+    rangeRef.current = range;
+    setLoading(true);
+    const apply = (res) => {
+      if (rangeRef.current !== range) return; // stale response for an old range
+      setData(res.data.samples || []);
+      setLoading(false);
+    };
+    axios.get('/api/metrics/history', { params: { range } })
+      .then(apply)
+      .catch(() => { if (rangeRef.current === range) setLoading(false); });
     const t = setInterval(() => {
       axios.get('/api/metrics/history', { params: { range } })
-        .then(res => setData(res.data.samples || []))
+        .then(apply)
         .catch(() => {});
     }, 30000);
     return () => clearInterval(t);

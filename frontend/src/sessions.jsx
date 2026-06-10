@@ -40,15 +40,15 @@ function SessionsProvider({ children }) {
   }, []);
 
   const close = useCallback((id) => {
-    setSessions(arr => {
-      const next = arr.filter(s => s.id !== id);
-      if (id === activeId) {
-        setActiveId(next.length ? next[next.length - 1].id : null);
-        if (!next.length) setFullscreen(false);
-      }
-      return next;
-    });
-  }, [activeId]);
+    // Keep nested setState calls out of the updater — updaters must be pure
+    // (StrictMode double-invokes them)
+    const next = sessions.filter(s => s.id !== id);
+    setSessions(next);
+    if (id === activeId) {
+      setActiveId(next.length ? next[next.length - 1].id : null);
+      if (!next.length) setFullscreen(false);
+    }
+  }, [sessions, activeId]);
 
   const minimize = useCallback(() => setFullscreen(false), []);
   const restore = useCallback((id) => {
@@ -421,6 +421,8 @@ function RealLogsPane({ session, active }) {
   }, [active, session.id, setSessions]);
 
   useEffect(() => {
+    // Don't keep refetching full log payloads while the pane is hidden
+    if (!active) return;
     const fetchLogs = async () => {
       try {
         if (ctrlRef.current) ctrlRef.current.abort();
@@ -437,7 +439,7 @@ function RealLogsPane({ session, active }) {
     fetchLogs();
     const interval = setInterval(fetchLogs, 2000);
     return () => clearInterval(interval);
-  }, [container]);
+  }, [container, active]);
 
   useEffect(() => {
     if (bodyRef.current) {

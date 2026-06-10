@@ -70,7 +70,9 @@ let saveTimer = null;
 const saveState = () => {
     try {
         ensureStateDir();
-        fs.writeFileSync(STATE_PATH, JSON.stringify(state, null, 2));
+        const tmp = STATE_PATH + '.tmp';
+        fs.writeFileSync(tmp, JSON.stringify(state, null, 2));
+        fs.renameSync(tmp, STATE_PATH);
     } catch (e) {
         console.error('saveState failed', e.message);
     }
@@ -165,9 +167,10 @@ const getTemperatures = async () => {
                 gpuRaw = await runCommandThrow("nvidia-smi --query-gpu=temperature.gpu,utilization.gpu --format=csv,noheader,nounits 2>&1");
                 nvidiaSmiFailing = false;
             } catch (e) {
+                const firstFailure = !nvidiaSmiFailing;
                 nvidiaSmiFailing = true;
                 lastNvidiaCheckTime = now;
-                if (!nvidiaSmiFailing) console.log('[nvidia] GPU monitoring disabled:', e.message.slice(0, 80));
+                if (firstFailure) console.log('[nvidia] GPU monitoring disabled:', e.message.slice(0, 80));
             }
         }
 
@@ -218,7 +221,9 @@ const probeProtocol = async (protocol, port, host = '127.0.0.1') => {
         headers: { Accept: 'text/html,application/xhtml+xml,*/*', 'User-Agent': 'ServiceProbe/1.0' },
     };
     if (protocol === 'https') cfg.httpsAgent = insecureHttpsAgent;
-    const base = `${protocol}://${host}:${port}`;
+    // IPv6 literals must be bracketed inside URLs
+    const urlHost = host.includes(':') ? `[${host}]` : host;
+    const base = `${protocol}://${urlHost}:${port}`;
     try {
         const response = await axios.get(base, cfg);
         const contentType = response.headers['content-type'] || '';
@@ -258,9 +263,11 @@ const probePort = async (port, bindHost = '127.0.0.1') => {
     }
     // Resolve which host to probe: if the service is bound to a specific non-loopback
     // address (LAN or Tailscale), probing 127.0.0.1 would always fail.
-    const probeHost = (bindHost === '0.0.0.0' || bindHost === '::' || bindHost === '*' || !bindHost)
+    // ss/lsof report IPv6 addresses in bracket form ([::], [::1]) — strip them
+    const normalizedHost = (bindHost || '').replace(/^\[|\]$/g, '');
+    const probeHost = (normalizedHost === '0.0.0.0' || normalizedHost === '::' || normalizedHost === '*' || !normalizedHost)
         ? '127.0.0.1'
-        : bindHost;
+        : normalizedHost;
     // Probe http and https in parallel — half the latency vs sequential
     const [httpRes, httpsRes] = await Promise.all([
         probeProtocol('http', port, probeHost),
@@ -764,9 +771,9 @@ app.post('/api/docker/control', async (req, res) => {
     }
     try {
         if (action === 'remove') {
-            await runCommand(`docker rm -f ${shellQuote(name)}`);
+            await runCommandThrow(`docker rm -f ${shellQuote(name)}`);
         } else {
-            await runCommand(`docker ${action} ${shellQuote(name)}`);
+            await runCommandThrow(`docker ${action} ${shellQuote(name)}`);
         }
         discoveryCache = null; // Clear cache to show new status instantly
         res.json({ ok: true });
@@ -870,6 +877,7 @@ const getDiskInfo = async () => {
                             const val = parseFloat(str) || 0;
                             if (str.includes('T')) return Math.round(val * 1024);
                             if (str.includes('M')) return Math.round(val / 1024);
+                            if (str.includes('K')) return Math.round(val / 1024 / 1024);
                             return Math.round(val);
                         };
 
@@ -2004,30 +2012,39 @@ app.post('/api/ssh/keys/deploy', async (req, res) => {
     if (!keyId || !host || !username) {
         return res.status(400).json({ error: 'keyId, host, and username are required' });
     }
-    
+    if (keyId !== path.basename(keyId) || !keyId.endsWith('.pub')) {
+        return res.status(400).json({ error: 'Invalid keyId' });
+    }
+
     const pubPath = path.join('/home/ayman/.ssh', keyId);
     if (!fs.existsSync(pubPath)) {
         return res.status(400).json({ error: 'Public key file not found' });
     }
-    
+
     try {
         const pubKeyContent = fs.readFileSync(pubPath, 'utf8').trim();
         const { Client } = require('ssh2');
         const conn = new Client();
-        
+        let responded = false;
+        const respond = (status, body) => {
+            if (responded) return;
+            responded = true;
+            res.status(status).json(body);
+        };
+
         conn.on('ready', () => {
             const cmd = `mkdir -p ~/.ssh && chmod 700 ~/.ssh && echo ${shellQuote(pubKeyContent)} >> ~/.ssh/authorized_keys && chmod 600 ~/.ssh/authorized_keys`;
             conn.exec(cmd, (err, stream) => {
                 if (err) {
                     conn.end();
-                    return res.status(500).json({ error: `Command exec failed: ${err.message}` });
+                    return respond(500, { error: `Command exec failed: ${err.message}` });
                 }
                 stream.on('close', (code, signal) => {
                     conn.end();
                     if (code === 0) {
-                        res.json({ ok: true });
+                        respond(200, { ok: true });
                     } else {
-                        res.status(500).json({ error: `Deployment exited with code ${code}` });
+                        respond(500, { error: `Deployment exited with code ${code}` });
                     }
                 });
                 stream.stderr.on('data', (data) => {
@@ -2035,9 +2052,9 @@ app.post('/api/ssh/keys/deploy', async (req, res) => {
                 });
             });
         });
-        
+
         conn.on('error', (err) => {
-            res.status(500).json({ error: `SSH Connection Error: ${err.message}` });
+            respond(500, { error: `SSH Connection Error: ${err.message}` });
         });
         
         conn.connect({
@@ -2240,7 +2257,7 @@ app.post('/api/processes/:pid/signal', async (req, res) => {
 
 app.post('/api/processes/:pid/nice', async (req, res) => {
     const pid = parseInt(req.params.pid, 10);
-    const nice = parseInt(req.body.nice, 10);
+    const nice = parseInt((req.body || {}).nice, 10);
     if (!pid || isNaN(pid)) return res.status(400).json({ error: 'Invalid PID' });
     if (isNaN(nice) || nice < -20 || nice > 19) return res.status(400).json({ error: 'Nice must be -20..19' });
     try {
@@ -3208,7 +3225,9 @@ app.get('/api/agent-jobs/:id/stream', (req, res) => {
 app.get('/api/fs/browse', (req, res) => {
     const { path: dirPath } = req.query;
     if (!dirPath) return res.status(400).json({ error: 'path is required' });
-    const targetPath = path.resolve(dirPath);
+    let targetPath;
+    try { targetPath = safeFilePath(dirPath); }
+    catch (e) { return res.status(e.status || 400).json({ error: e.message }); }
     try {
         const items = fs.readdirSync(targetPath, { withFileTypes: true });
         const folders = [];
@@ -3229,11 +3248,14 @@ app.get('/api/fs/browse', (req, res) => {
 });
 
 app.post('/api/fs/mkdir', (req, res) => {
-    const { parent, name } = req.body;
+    const { parent, name } = req.body || {};
     if (!parent || !name) return res.status(400).json({ error: 'parent and name are required' });
-    const safeName = name.replace(/[/\0]/g, '').trim();
-    if (!safeName) return res.status(400).json({ error: 'Invalid folder name' });
-    const newDir = path.join(path.resolve(parent), safeName);
+    const safeName = String(name).replace(/[/\0]/g, '').trim();
+    if (!safeName || safeName === '.' || safeName === '..') return res.status(400).json({ error: 'Invalid folder name' });
+    let parentDir;
+    try { parentDir = safeFilePath(parent); }
+    catch (e) { return res.status(e.status || 400).json({ error: e.message }); }
+    const newDir = path.join(parentDir, safeName);
     try {
         fs.mkdirSync(newDir, { recursive: false });
         res.json({ path: newDir, name: safeName });
@@ -3526,6 +3548,13 @@ app.get('/api/cron', async (req, res) => {
 app.post('/api/cron', async (req, res) => {
     const { schedule, command, user } = req.body || {};
     if (!schedule || !command) return res.status(400).json({ error: 'schedule and command are required' });
+    // Newlines would inject extra crontab entries
+    if (/[\r\n]/.test(schedule) || /[\r\n]/.test(command)) {
+        return res.status(400).json({ error: 'schedule and command must be single-line' });
+    }
+    const schedParts = String(schedule).trim().split(/\s+/);
+    const validSchedule = schedule.trim().startsWith('@') || (schedParts.length === 5 && schedParts.every(p => /^[0-9*,/\-]+$/.test(p)));
+    if (!validSchedule) return res.status(400).json({ error: 'Invalid cron schedule' });
     const targetUser = user === 'root' ? 'root' : TARGET_USER;
     try {
         const existing = await runCommand(`crontab -l -u ${shellQuote(targetUser)} 2>/dev/null`);
@@ -3664,7 +3693,11 @@ const runBackupJob = (job) => {
         let cmd = '';
         const src = job.src;
         const dest = job.dest;
-        const extra = job.args || '';
+        // args holds extra CLI flags — quote each token so shell metacharacters
+        // can't escape into the bash -c command below
+        const extra = String(job.args || '').trim()
+            ? String(job.args).trim().split(/\s+/).map(shellQuote).join(' ')
+            : '';
 
         if (job.destType === 'rclone') {
             cmd = `rclone sync ${shellQuote(src)} ${shellQuote(dest)} ${extra}`;
@@ -3888,6 +3921,9 @@ app.post('/api/files/upload-chunk', async (req, res) => {
         const safeFileName = path.basename(fileName);
         const chunkIdx = parseInt(chunkIndex, 10);
         const totalCh = parseInt(totalChunks, 10);
+        if (!Number.isInteger(chunkIdx) || !Number.isInteger(totalCh) || chunkIdx < 0 || totalCh < 1 || chunkIdx >= totalCh) {
+            return res.status(400).json({ error: 'Invalid chunkIndex/totalChunks.' });
+        }
 
         let resolvedDir;
         try { resolvedDir = safeFilePath(dir); }
@@ -4193,6 +4229,11 @@ app.post('/api/network/lan/scan', async (req, res) => {
 
     try {
         const customSubnet = typeof req.body?.subnet === 'string' && req.body.subnet.trim() ? req.body.subnet.trim() : null;
+        // Strict CIDR/IP validation — this value reaches nmap argv and a bash -c ping sweep
+        if (customSubnet && !/^\d{1,3}(\.\d{1,3}){3}(\/\d{1,2})?$/.test(customSubnet)) {
+            send({ type: 'error', msg: 'Invalid subnet — expected e.g. 192.168.1.0/24' });
+            return res.end();
+        }
         const subnet = customSubnet || await getSubnetRange();
         send({ type: 'status', msg: `Scanning ${subnet}…` });
 
@@ -4474,6 +4515,7 @@ app.post('/api/packages/install', (req, res) => pkgSse('install', req.body?.pack
 app.post('/api/packages/remove',  (req, res) => pkgSse('remove',  req.body?.packages, req, res));
 
 // ─── Tmux-backed Terminal Session Store (declared here so API routes below can use it) ───
+const TERMINAL_USER         = TARGET_USER;
 const TMUX_PREFIX           = 'sh-';
 const TERM_SESSION_IDLE_TTL = 4 * 60 * 60 * 1000;
 const termSessions          = new Map();
@@ -4589,7 +4631,6 @@ server.on('upgrade', (req, socket, head) => {
     });
 });
 
-const TERMINAL_USER = TARGET_USER;
 const sanitizeAgent = (raw) => {
     if (!raw) return null;
     return KNOWN_AGENTS.find(a => a.id === raw || a.cmd === raw) || null;
